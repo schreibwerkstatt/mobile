@@ -61,8 +61,8 @@ android {
 
         // GitHub-Repo für die In-App-Update-Prüfung (UpdateChecker liest dort
         // releases/latest). Distributionskanal, NICHT die Mutterprojekt-Server-API.
-        buildConfigField("String", "UPDATE_GITHUB_OWNER", "\"bedeberger\"")
-        buildConfigField("String", "UPDATE_GITHUB_REPO", "\"schreibwerkstatt-mobile\"")
+        buildConfigField("String", "UPDATE_GITHUB_OWNER", "\"schreibwerkstatt\"")
+        buildConfigField("String", "UPDATE_GITHUB_REPO", "\"mobile\"")
 
         // Demo-Zugang (leer = kein Demo-Button, siehe PairingViewModel.demoAvailable).
         buildConfigField("String", "DEMO_SERVER_URL", "\"$demoServerUrl\"")

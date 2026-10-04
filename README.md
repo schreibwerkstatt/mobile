@@ -1,7 +1,7 @@
 # Schreibwerkstatt Mobile (Android)
 
 Nativer Android-Client (Kotlin/Compose) für die selbst-gehostete Server-App
-[**schreibwerkstatt**](https://github.com/bedeberger/schreibwerkstatt). Schlanker
+[**schreibwerkstatt**](https://github.com/schreibwerkstatt/schreibwerkstatt). Schlanker
 Schreib-/Diktat-Client: native Shell (Auth, Navigation, Sync, Audio, Lifecycle)
 plus der **Focus-Editor als OTA-Bundle in einer WebView** — der Editor wird nie
 in Kotlin nachgebaut, sondern zur Laufzeit vom Server geladen.
