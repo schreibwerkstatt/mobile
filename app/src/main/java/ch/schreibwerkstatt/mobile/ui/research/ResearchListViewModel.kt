@@ -14,8 +14,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * ViewModel der Recherche-Liste eines Buchs. **Online-first**: lädt beim Öffnen
- * und bei Pull-to-Refresh frisch vom Server (kein lokaler Cache in v1).
+ * ViewModel der Recherche-Liste eines Buchs. **Online-first**: lädt bei jedem
+ * Sichtbarwerden des Screens (auch nach „+ Erfassen" zurück) und bei
+ * Pull-to-Refresh frisch vom Server (kein lokaler Cache in v1).
  */
 class ResearchListViewModel(
     private val bookId: Long,
@@ -35,14 +36,25 @@ class ResearchListViewModel(
     private val _loaded = MutableStateFlow(false)
     val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
 
-    init { refresh(silent = true) }
+    /**
+     * Letzter Ladeversuch ist gescheitert. Ohne lokalen Cache hiesse eine leere Liste
+     * dann NICHT „keine Recherche" — der Screen zeigt stattdessen den Fehlerzustand.
+     */
+    private val _loadFailed = MutableStateFlow(false)
+    val loadFailed: StateFlow<Boolean> = _loadFailed.asStateFlow()
 
-    fun refresh(silent: Boolean = false) {
+    fun refresh() {
         viewModelScope.launch {
             _loading.value = true
             research.list(bookId)
-                .onSuccess { _items.value = it }
-                .onFailure { if (!silent) _error.value = it.message }
+                .onSuccess {
+                    _items.value = it
+                    _loadFailed.value = false
+                }
+                .onFailure {
+                    _loadFailed.value = true
+                    _error.value = it.message
+                }
             _loading.value = false
             _loaded.value = true
         }

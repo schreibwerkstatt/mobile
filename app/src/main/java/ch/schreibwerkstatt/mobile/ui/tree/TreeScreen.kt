@@ -189,11 +189,21 @@ fun TreeScreen(
                     month = state.calendarMonth,
                     entries = state.diaryEntries,
                     creating = state.creatingEntry,
+                    loading = state.loading,
+                    error = state.error,
+                    onRetry = { vm.load() },
                     onPrevMonth = { vm.stepMonth(-1) },
                     onNextMonth = { vm.stepMonth(1) },
-                    onDayClick = { dateIso -> vm.openOrCreateEntry(dateIso, onOpenPage) },
+                    // Während der Baum lädt, ist ein leerer Tag noch keine Aussage — ein Tipp
+                    // liefe sonst in den Anlege-Pfad. Bekannte (gecachte) Einträge öffnen geht.
+                    onDayClick = { dateIso ->
+                        if (!state.loading || dateIso in state.diaryEntries) {
+                            vm.openOrCreateEntry(dateIso, onOpenPage)
+                        }
+                    },
                     onTodayClick = {
-                        vm.openOrCreateEntry(java.time.LocalDate.now().toString(), onOpenPage)
+                        val todayIso = java.time.LocalDate.now().toString()
+                        if (!state.loading || todayIso in state.diaryEntries) vm.openOrCreateEntry(todayIso, onOpenPage)
                     },
                 )
             }

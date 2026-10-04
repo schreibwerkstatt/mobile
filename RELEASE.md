@@ -40,7 +40,7 @@ keyPassword=<dein Key-Passwort>
 ```
 
 Solange `keystore.properties` **fehlt**, baut der Release-Build trotzdem – aber **unsigniert**
-(`app-release-unsigned.apk`). So bleiben CI und frische Checkouts funktionsfähig. Sobald die
+(`app-<flavor>-release-unsigned.apk`). So bleiben CI und frische Checkouts funktionsfähig. Sobald die
 Datei vorhanden und vollständig ist, signiert Gradle automatisch.
 
 ## 3. Vor jedem Release: Version hochzählen
@@ -57,15 +57,19 @@ versionCode=2       # MUSS bei jedem Store-Upload streng monoton steigen
 
 ## 4. Bauen
 
-```bash
-# Play Store – Android App Bundle:
-./gradlew bundleRelease
-#   → app/build/outputs/bundle/release/app-release.aab
+Die App hat zwei Flavors (Dimension `distribution`): `play` für den Store (ohne
+Selbst-Update) und `github` für Sideload/GitHub-Releases (mit In-App-Update). Jeder Kanal
+bekommt sein eigenes Artefakt.
 
-# Sideload / eigener Server – APK:
-./gradlew assembleRelease
-#   → app/build/outputs/apk/release/app-release.apk   (signiert)
-#     bzw. app-release-unsigned.apk, falls keystore.properties fehlt
+```bash
+# Play Store – Android App Bundle (play-Flavor):
+./gradlew bundlePlayRelease
+#   → app/build/outputs/bundle/playRelease/app-play-release.aab
+
+# Sideload / GitHub-Release – APK (github-Flavor):
+./gradlew assembleGithubRelease
+#   → app/build/outputs/apk/github/release/app-github-release.apk   (signiert)
+#     bzw. app-github-release-unsigned.apk, falls keystore.properties fehlt
 ```
 
 Der Release-Build ist **minifiziert** (R8, `isMinifyEnabled = true`). Nach Änderungen an
@@ -108,6 +112,6 @@ Geschlossener Tester-Kreis per Link, ohne vollen Review – guter Mittelweg.
 ## Checkliste pro Release
 
 - [ ] `versionCode` erhöht, `versionName` angepasst ([version.properties](version.properties))
-- [ ] `./gradlew bundleRelease` bzw. `assembleRelease` erfolgreich
+- [ ] `./gradlew bundlePlayRelease` bzw. `assembleGithubRelease` erfolgreich
 - [ ] Release-Artefakt auf echtem Gerät getestet (Pairing, Sync, Editor-WebView, Diktat)
 - [ ] Keystore + `keystore.properties` sicher gesichert (nicht im Repo)

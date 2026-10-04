@@ -25,7 +25,17 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        sharedResearch = parseShareIntent(intent)
+        // Nur beim echten Start den Intent auswerten. Bei einem Neuaufbau (Rotation,
+        // Dark-Mode-/Sprachwechsel) trägt `intent` noch den alten Share — der würde das
+        // Capture-Formular nach dem Speichern erneut öffnen. Ein noch nicht erledigter
+        // Share überlebt stattdessen über den Instance-State.
+        sharedResearch = if (savedInstanceState == null) {
+            parseShareIntent(intent)
+        } else {
+            savedInstanceState.getStringArray(STATE_SHARED)?.let { (url, title, note) ->
+                SharedResearch(url = url, title = title, note = note)
+            }
+        }
         val serviceLocator = locator
         setContent {
             val themeMode by serviceLocator.settings.themeMode
@@ -45,9 +55,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        sharedResearch?.let {
+            outState.putStringArray(STATE_SHARED, arrayOf(it.url, it.title, it.note))
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         parseShareIntent(intent)?.let { sharedResearch = it }
+    }
+
+    private companion object {
+        const val STATE_SHARED = "shared_research"
     }
 }

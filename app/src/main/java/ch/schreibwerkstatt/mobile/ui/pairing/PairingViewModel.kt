@@ -11,6 +11,7 @@ import ch.schreibwerkstatt.mobile.data.net.NetworkClient
 import ch.schreibwerkstatt.mobile.data.net.VerifyResult
 import ch.schreibwerkstatt.mobile.data.prefs.SettingsStore
 import ch.schreibwerkstatt.mobile.data.prefs.TokenStore
+import ch.schreibwerkstatt.mobile.data.repo.ContentRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,6 +38,12 @@ data class PairingUiState(
     val deviceName: String = "",
     val error: PairingError? = null,
     val busy: Boolean = false,
+    /**
+     * Wechsel auf einen anderen Server würde so viele noch nicht übertragene lokale
+     * Änderungen verwerfen → der Screen fragt nach, bevor [PairingViewModel.couple]
+     * mit `discardConfirmed = true` erneut läuft.
+     */
+    val confirmDiscard: Int? = null,
 )
 
 /**
@@ -49,6 +56,7 @@ class PairingViewModel(
     private val settings: SettingsStore,
     private val tokenStore: TokenStore,
     private val network: NetworkClient,
+    private val repo: ContentRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(PairingUiState(deviceName = android.os.Build.MODEL ?: "Android"))
@@ -84,6 +92,8 @@ class PairingViewModel(
         couple(onPaired)
     }
 
+    fun dismissDiscard() { _state.value = _state.value.copy(confirmDiscard = null) }
+
     fun onServerUrlChange(v: String) { _state.value = _state.value.copy(serverUrl = v, error = null) }
     fun onTokenChange(v: String) { _state.value = _state.value.copy(token = v, error = null) }
     fun onDeviceNameChange(v: String) { _state.value = _state.value.copy(deviceName = v) }
@@ -91,8 +101,13 @@ class PairingViewModel(
     /**
      * URL + Token prüfen, Token gegen den Server verifizieren und bei Erfolg
      * speichern. [onPaired] wird nur bei erfolgreichem Pairing aufgerufen.
+     *
+     * Die Server-URL wird erst nach erfolgreicher Verifikation übernommen. Ist es ein
+     * ANDERER Server als bisher, wird der lokale Cache samt Queue geleert (Seiten-IDs
+     * sind serverlokal) — liegen dort noch ungesendete Änderungen, erst nach
+     * Rückfrage ([PairingUiState.confirmDiscard]).
      */
-    fun couple(onPaired: () -> Unit) {
+    fun couple(onPaired: () -> Unit, discardConfirmed: Boolean = false) {
         val rawUrl = _state.value.serverUrl.trim()
         val token = _state.value.token.trim()
 
@@ -106,12 +121,21 @@ class PairingViewModel(
         }
 
         val normalized = SettingsStore.normalizeBaseUrl(rawUrl)
-        _state.value = _state.value.copy(serverUrl = normalized, busy = true, error = null)
+        _state.value = _state.value.copy(serverUrl = normalized, busy = true, error = null, confirmDiscard = null)
 
         viewModelScope.launch {
-            settings.setServerBaseUrl(normalized)
             when (val r = network.verifyToken(normalized, token)) {
                 is VerifyResult.Ok -> {
+                    val previous = settings.serverBaseUrlOnce()
+                    if (previous != null && previous != normalized) {
+                        val unsynced = repo.unsyncedCount()
+                        if (unsynced > 0 && !discardConfirmed) {
+                            _state.value = _state.value.copy(busy = false, confirmDiscard = unsynced)
+                            return@launch
+                        }
+                        repo.clearLocalData()
+                    }
+                    settings.setServerBaseUrl(normalized)
                     val label = _state.value.deviceName.ifBlank { "Android" }
                     tokenStore.save(token, label, null)
                     _state.value = _state.value.copy(busy = false)
@@ -127,7 +151,7 @@ class PairingViewModel(
 
     companion object {
         fun factory(locator: ServiceLocator): ViewModelProvider.Factory = viewModelFactory {
-            initializer { PairingViewModel(locator.settings, locator.tokenStore, locator.network) }
+            initializer { PairingViewModel(locator.settings, locator.tokenStore, locator.network, locator.repository) }
         }
     }
 }

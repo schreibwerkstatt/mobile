@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import ch.schreibwerkstatt.mobile.data.db.AppDatabase
 import ch.schreibwerkstatt.mobile.data.db.PageEntity
 import ch.schreibwerkstatt.mobile.data.net.dto.SyncCursorDto
+import ch.schreibwerkstatt.mobile.data.net.dto.SyncDeletedDto
 import ch.schreibwerkstatt.mobile.data.net.dto.SyncPageDto
 import ch.schreibwerkstatt.mobile.data.net.dto.SyncResponse
 import ch.schreibwerkstatt.mobile.data.prefs.SettingsStore
@@ -145,5 +146,20 @@ class SyncEngineTest {
         assertNotNull(db.pageDao().byId(20))
         assertNotNull(db.pageDao().byId(21))
         assertEquals("page2", db.syncCursorDao().forBook(bookId)!!.since)
+    }
+
+    @Test fun `server deletions remove clean pages but keep dirty ones`() = runTest {
+        db.pageDao().upsert(PageEntity(id = 30, bookId = bookId, name = "gone", html = "<p>x</p>", dirty = false))
+        db.pageDao().upsert(PageEntity(id = 31, bookId = bookId, name = "edited", html = "<p>y</p>", dirty = true))
+        api.syncQueue += SyncResponse(
+            now = "now",
+            deleted = listOf(SyncDeletedDto(page_id = 30), SyncDeletedDto(page_id = 31)),
+            has_more = false,
+        )
+
+        engine.pullBook(bookId, baseUrl).getOrThrow()
+
+        assertEquals(null, db.pageDao().byId(30))
+        assertNotNull(db.pageDao().byId(31)) // Pending-Write hat Vorrang
     }
 }

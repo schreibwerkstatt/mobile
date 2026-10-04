@@ -24,6 +24,12 @@
     <string name="pairing_login">Koppeln</string>
     <string name="pairing_intro">Server-Adresse eingeben und ein Zugangstoken einfügen. Das Token erstellst du am Server unter „Einstellungen → Geräte" und kopierst es hierher.</string>
     <string name="pairing_busy">Token wird geprüft…</string>
+    <string name="pairing_discard_title">Anderen Server koppeln?</string>
+    <plurals name="pairing_discard_text">
+        <item quantity="one">Auf diesem Gerät liegt %d Änderung, die noch nicht zum bisherigen Server übertragen wurde. Beim Wechsel des Servers geht sie verloren.</item>
+        <item quantity="other">Auf diesem Gerät liegen %d Änderungen, die noch nicht zum bisherigen Server übertragen wurden. Beim Wechsel des Servers gehen sie verloren.</item>
+    </plurals>
+    <string name="pairing_discard_confirm">Verwerfen und koppeln</string>
     <string name="pairing_demo_button">Demo ausprobieren</string>
     <string name="pairing_demo_hint">Noch kein eigener Server? Koppelt die App mit der öffentlichen Demo-Instanz. Die Inhalte sind für alle sichtbar und werden regelmässig zurückgesetzt.</string>
     <string name="pairing_error_url_scheme">URL muss mit http:// oder https:// beginnen</string>
@@ -125,8 +131,8 @@
     <string name="action_close">Schliessen</string>
     <string name="action_retry">Erneut versuchen</string>
 
-    <!-- Tree (Kapitel-/Seitenbaum) -->
-    <string name="tree_search_hint">Seite oder Inhalt suchen</string>
+    <!-- Tree (Kapitel-/Abschnittsbaum) -->
+    <string name="tree_search_hint">Abschnitt oder Inhalt suchen</string>
     <string name="tree_page_updated">Zuletzt geändert: %1$s</string>
     <string name="tree_page_updated_unknown">Noch nicht synchronisiert</string>
     <string name="tree_load_error">Fehler beim Laden: %1$s</string>
@@ -137,7 +143,7 @@
     <string name="history_words">%1$d Wörter</string>
     <string name="history_restore">Wiederherstellen</string>
     <string name="history_restore_confirm_title">Version wiederherstellen?</string>
-    <string name="history_restore_confirm_message">Der aktuelle Seiteninhalt wird durch diese Version ersetzt. Der bisherige Stand bleibt als neue Version im Verlauf erhalten.</string>
+    <string name="history_restore_confirm_message">Der aktuelle Abschnittsinhalt wird durch diese Version ersetzt. Der bisherige Stand bleibt als neue Version im Verlauf erhalten.</string>
     <string name="history_source_focus">Focus-Editor</string>
     <string name="history_source_main">Editor</string>
     <string name="history_source_macapp">Mac-App</string>
@@ -165,9 +171,9 @@
     <string name="editor_bundle_error_fallback">Bundle-Fehler</string>
     <string name="editor_bundle_no_server">Keine Server-URL konfiguriert</string>
     <string name="editor_bundle_unavailable">Editor-Bundle nicht verfügbar</string>
-    <string name="editor_page_fallback_title">Seite</string>
+    <string name="editor_page_fallback_title">Abschnitt</string>
     <string name="editor_conflict_title">Konflikt</string>
-    <string name="editor_conflict_message">%1$s hat diese Seite geändert (%2$s). Vergleiche beide Fassungen und wähle, welche bestehen bleibt:</string>
+    <string name="editor_conflict_message">%1$s hat diesen Abschnitt geändert (%2$s). Vergleiche beide Fassungen und wähle, welche bestehen bleibt:</string>
     <string name="editor_conflict_someone">jemand anderem</string>
     <string name="editor_conflict_unknown_time">unbekannt</string>
     <string name="editor_conflict_your_version">Deine Version</string>
@@ -179,8 +185,8 @@
     <string name="editor_conflict_indicator">Ungelöster Konflikt – Fassungen vergleichen</string>
     <!-- Editor-Snackbars (im Screen aus dem ViewModel-Message-Typ aufgelöst). -->
     <string name="editor_msg_saved_offline">Offline gespeichert – wird später synchronisiert.</string>
-    <string name="editor_msg_conflict">Konflikt: %1$s hat die Seite geändert.</string>
-    <string name="editor_msg_locked">Seite gesperrt durch %1$s.</string>
+    <string name="editor_msg_conflict">Konflikt: %1$s hat den Abschnitt geändert.</string>
+    <string name="editor_msg_locked">Abschnitt gesperrt durch %1$s.</string>
     <string name="editor_lock_default">Lektorat</string>
     <string name="editor_msg_error">Editor-Fehler: %1$s</string>
     <string name="editor_msg_record_failed">Aufnahme fehlgeschlagen: %1$s</string>
@@ -203,6 +209,7 @@
     <string name="research_empty">Noch keine Recherche-Elemente.</string>
     <string name="research_empty_hint">Teile einen Link aus einer anderen App hierher oder tippe auf „+", um etwas festzuhalten.</string>
     <string name="research_load_error">Recherche konnte nicht geladen werden: %1$s</string>
+    <string name="research_load_failed">Recherche konnte nicht geladen werden. Zum Aktualisieren nach unten ziehen.</string>
     <string name="research_add">Recherche hinzufügen</string>
     <string name="research_untitled">(ohne Titel)</string>
     <!-- Detail-Ansicht (Klick auf ein Element) -->

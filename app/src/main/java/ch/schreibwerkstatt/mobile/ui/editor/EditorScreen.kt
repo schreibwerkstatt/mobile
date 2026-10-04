@@ -108,7 +108,11 @@ import kotlin.math.sin
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.webkit.WebViewAssetLoader
 import ch.schreibwerkstatt.mobile.R
@@ -171,7 +175,31 @@ fun EditorScreen(
     var showMicRationale by remember { mutableStateOf(false) }
     var showMicBlocked by remember { mutableStateOf(false) }
 
-    val startDictation = { vm.toggleDictation { text -> insertText(evalJs, text) } }
+    val startDictation = { vm.toggleDictation() }
+
+    // Diktat-Text geht an DIESE WebView; nach Rotation registriert die neue Komposition
+    // ihr eigenes Ziel (das VM puffert dazwischen, siehe EditorViewModel.attachTextSink).
+    DisposableEffect(vm) {
+        val sink: (String) -> Unit = { text -> insertText(evalJs, text) }
+        vm.attachTextSink(sink)
+        onDispose { vm.detachTextSink(sink) }
+    }
+
+    // Presence-/Schreibzeit-Heartbeat nur, solange diese Seite sichtbar ist: der
+    // LifecycleOwner ist hier der Backstack-Eintrag — verdeckt (Wisch-Navigation,
+    // Verlauf) oder im Hintergrund fällt er unter RESUMED und der Block wird gecancelt.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner, vm) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) { vm.runWhileVisible() }
+    }
+
+    // App geht in den Hintergrund: Save anstossen. Der Schliess-Save in onDispose greift
+    // nur beim Verlassen der Komposition — beim Wegwischen aus den Recents oder einem
+    // Prozess-Tod im Hintergrund gäbe es sonst keinen, und was im Autosave-Debounce
+    // des Editors liegt, wäre verloren. Persistenz läuft über die Bridge im App-Scope.
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        evalJs("window.__sw && window.__sw.save();")
+    }
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         when {
             granted -> startDictation()
@@ -374,7 +402,10 @@ fun EditorScreen(
                         bundleDir = b.dir,
                         bridge = bridge,
                         darkTheme = darkTheme,
-                        onWebViewCreated = { webViewRef.value = it },
+                        onWebViewCreated = {
+                            webViewRef.value = it
+                            vm.onWebViewCreated()
+                        },
                     )
                 }
             }
@@ -387,7 +418,7 @@ fun EditorScreen(
                 level = state.level,
                 onStop = {
                     vibrateTick(context)
-                    vm.toggleDictation { text -> insertText(evalJs, text) }
+                    vm.toggleDictation()
                 },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -498,6 +529,9 @@ fun EditorScreen(
     val appScope = context.locator.applicationScope
     DisposableEffect(Unit) {
         onDispose {
+            // Seite wirklich verlassen (nicht bloss Rotation/Theme-Wechsel): laufende
+            // Aufnahme beenden — das VM bleibt bei Wisch-Navigation im Backstack.
+            if (activity?.isChangingConfigurations != true) vm.stopDictationOnLeave()
             val wv = webViewRef.value
             webViewRef.value = null
             if (wv != null) {

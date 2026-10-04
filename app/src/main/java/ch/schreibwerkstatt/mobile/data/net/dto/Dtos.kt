@@ -156,6 +156,17 @@ data class SyncResponse(
     val pages: List<SyncPageDto> = emptyList(),
     val has_more: Boolean = false,
     val cursor: SyncCursorDto? = null,
+    /** Seit `since` gelöschte Seiten (leer beim Voll-Pull ohne `since`). */
+    val deleted: List<SyncDeletedDto> = emptyList(),
+    /** `deleted` ist gedeckelt → vollständiger Abgleich nur über `…/tree`. */
+    val deleted_has_more: Boolean = false,
+)
+
+@Serializable
+data class SyncDeletedDto(
+    val page_id: Long,
+    val page_name: String? = null,
+    val deleted_at: String? = null,
 )
 
 @Serializable

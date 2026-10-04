@@ -7,11 +7,14 @@ import ch.schreibwerkstatt.mobile.data.db.PageEntity
 import ch.schreibwerkstatt.mobile.data.db.PendingWriteEntity
 import ch.schreibwerkstatt.mobile.data.net.dto.PageDto
 import ch.schreibwerkstatt.mobile.data.prefs.SettingsStore
+import androidx.room.withTransaction
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import retrofit2.Response
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -199,5 +202,92 @@ class ContentRepositorySaveTest {
         db.bookDao().upsertAll(listOf(ch.schreibwerkstatt.mobile.data.db.BookEntity(id = 999L, name = "B")))
         repo.refreshBooks().getOrThrow()
         assertEquals(1, db.bookDao().all().count { it.id == 999L }) // Buch bleibt erhalten
+    }
+
+    @Test fun `401 keeps the write pending and aborts the flush run`() = runTest {
+        val p2 = 20L
+        db.pageDao().upsert(PageEntity(id = p2, bookId = bookId, name = "S2", html = "<p>o2</p>", updatedAt = "t0"))
+        api.savePageResponder = { throw java.io.IOException("offline") }
+        repo.savePage(pageId, bookId, "<p>a</p>")
+        repo.savePage(p2, bookId, "<p>b</p>")
+
+        // Token widerrufen: jeder PUT → 401.
+        var puts = 0
+        api.savePageResponder = { puts++; FakeContentApi.error(401, """{"error_code":"UNAUTHORIZED"}""") }
+        val res = repo.flushPending()
+
+        assertTrue(res.isFailure)
+        assertEquals(1, puts) // Lauf nach dem ersten 401 abgebrochen
+        // Beide Writes bleiben pending → nach dem Neu-Koppeln erneut geflusht.
+        assertEquals(2, db.pendingWriteDao().byStatus(PendingWriteEntity.STATUS_PENDING).size)
+        assertEquals(0, db.pendingWriteDao().byStatus(PendingWriteEntity.STATUS_FAILED).size)
+    }
+
+    @Test fun `401 on editor save returns Queued and keeps the write pending`() = runTest {
+        api.savePageResponder = { FakeContentApi.error(401, """{"error_code":"UNAUTHORIZED"}""") }
+
+        val res = repo.savePage(pageId, bookId, "<p>local</p>")
+
+        assertEquals(SaveResult.Queued, res)
+        assertEquals(PendingWriteEntity.STATUS_PENDING, db.pendingWriteDao().latestForPage(pageId)?.status)
+    }
+
+    @Test fun `newer save queued during a flush is rebased instead of clearing dirty`() = runTest {
+        // Während der PUT von A läuft, persistiert der Editor lokal B (Basis noch t0).
+        api.savePageResponder = { req ->
+            if (req.html == "<p>A</p>") {
+                runBlocking {
+                    db.withTransaction {
+                        db.pageDao().updateHtml(pageId, "<p>B</p>", "B", dirty = true)
+                        db.pendingWriteDao().deletePendingForPage(pageId)
+                        db.pendingWriteDao().insert(
+                            PendingWriteEntity(pageId = pageId, bookId = bookId, html = "<p>B</p>",
+                                deviceId = "d", createdAt = 2, baseUpdatedAt = "t0")
+                        )
+                    }
+                }
+                Response.success(PageDto(id = pageId, html = "<p>A</p>", updated_at = "t1"))
+            } else {
+                Response.success(PageDto(id = pageId, html = req.html, updated_at = "t2"))
+            }
+        }
+
+        repo.savePage(pageId, bookId, "<p>A</p>")
+
+        // B wartet weiter: Seite bleibt dirty mit B, nicht „sauber" mit A.
+        val page = db.pageDao().byId(pageId)!!
+        assertTrue(page.dirty)
+        assertEquals("<p>B</p>", page.html)
+        // B baut jetzt auf dem eben bestätigten Stand auf → kein 409 gegen den eigenen Save.
+        val b = db.pendingWriteDao().latestForPage(pageId)!!
+        assertEquals("t1", b.baseUpdatedAt)
+
+        repo.flushPending().getOrThrow()
+        assertEquals("t1", api.lastSaveRequest?.expected_updated_at)
+        assertFalse(db.pageDao().byId(pageId)!!.dirty)
+        assertNull(db.pendingWriteDao().latestForPage(pageId))
+    }
+
+    @Test fun `successful save clears a stale conflict row of the page`() = runTest {
+        api.savePageResponder = { FakeContentApi.error(409, """{"error_code":"PAGE_CONFLICT"}""") }
+        repo.savePage(pageId, bookId, "<p>a</p>")
+        api.savePageResponder = { req -> Response.success(PageDto(id = pageId, html = req.html, updated_at = "t1")) }
+
+        repo.savePage(pageId, bookId, "<p>b</p>")
+
+        assertNull(repo.openConflict(pageId))
+    }
+
+    @Test fun `loadPage does not overwrite a page that became dirty during the fetch`() = runTest {
+        api.pageResponder = {
+            // Close-Save der vorherigen Editor-Instanz landet, während der GET läuft.
+            runBlocking { db.pageDao().updateHtml(pageId, "<p>just typed</p>", "just typed", dirty = true) }
+            PageDto(id = it, html = "<p>server</p>", updated_at = "t1")
+        }
+
+        val page = repo.loadPage(pageId, bookId).getOrThrow()
+
+        assertEquals("<p>just typed</p>", page.html)
+        assertTrue(db.pageDao().byId(pageId)!!.dirty)
     }
 }

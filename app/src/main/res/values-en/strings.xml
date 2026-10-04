@@ -22,6 +22,12 @@
     <string name="pairing_login">Pair</string>
     <string name="pairing_intro">Enter the server address and paste an access token. Create the token on the server under “Settings → Devices” and copy it here.</string>
     <string name="pairing_busy">Verifying token…</string>
+    <string name="pairing_discard_title">Pair with a different server?</string>
+    <plurals name="pairing_discard_text">
+        <item quantity="one">This device has %d change that has not yet been sent to the previous server. Switching servers will discard it.</item>
+        <item quantity="other">This device has %d changes that have not yet been sent to the previous server. Switching servers will discard them.</item>
+    </plurals>
+    <string name="pairing_discard_confirm">Discard and pair</string>
     <string name="pairing_demo_button">Try the demo</string>
     <string name="pairing_demo_hint">No server of your own yet? This pairs the app with the public demo instance. Its contents are visible to everyone and are reset regularly.</string>
     <string name="pairing_error_url_scheme">URL must start with http:// or https://</string>
@@ -123,8 +129,8 @@
     <string name="action_close">Close</string>
     <string name="action_retry">Try again</string>
 
-    <!-- Tree (chapter/page tree) -->
-    <string name="tree_search_hint">Search page or content</string>
+    <!-- Tree (chapter/section tree) -->
+    <string name="tree_search_hint">Search section or content</string>
     <string name="tree_page_updated">Last changed: %1$s</string>
     <string name="tree_page_updated_unknown">Not yet synced</string>
     <string name="tree_load_error">Error loading: %1$s</string>
@@ -135,7 +141,7 @@
     <string name="history_words">%1$d words</string>
     <string name="history_restore">Restore</string>
     <string name="history_restore_confirm_title">Restore version?</string>
-    <string name="history_restore_confirm_message">The current page content will be replaced by this version. The previous state is kept as a new version in the history.</string>
+    <string name="history_restore_confirm_message">The current section content will be replaced by this version. The previous state is kept as a new version in the history.</string>
     <string name="history_source_focus">Focus editor</string>
     <string name="history_source_main">Editor</string>
     <string name="history_source_macapp">Mac app</string>
@@ -163,9 +169,9 @@
     <string name="editor_bundle_error_fallback">Bundle error</string>
     <string name="editor_bundle_no_server">No server URL configured</string>
     <string name="editor_bundle_unavailable">Editor bundle unavailable</string>
-    <string name="editor_page_fallback_title">Page</string>
+    <string name="editor_page_fallback_title">Section</string>
     <string name="editor_conflict_title">Conflict</string>
-    <string name="editor_conflict_message">%1$s changed this page (%2$s). Compare both versions and choose which one stays:</string>
+    <string name="editor_conflict_message">%1$s changed this section (%2$s). Compare both versions and choose which one stays:</string>
     <string name="editor_conflict_someone">someone else</string>
     <string name="editor_conflict_unknown_time">unknown</string>
     <string name="editor_conflict_your_version">Your version</string>
@@ -177,8 +183,8 @@
     <string name="editor_conflict_indicator">Unresolved conflict – compare versions</string>
     <!-- Editor snackbars (resolved in the screen from the ViewModel message type). -->
     <string name="editor_msg_saved_offline">Saved offline – will sync later.</string>
-    <string name="editor_msg_conflict">Conflict: %1$s changed the page.</string>
-    <string name="editor_msg_locked">Page locked by %1$s.</string>
+    <string name="editor_msg_conflict">Conflict: %1$s changed the section.</string>
+    <string name="editor_msg_locked">Section locked by %1$s.</string>
     <string name="editor_lock_default">an editor</string>
     <string name="editor_msg_error">Editor error: %1$s</string>
     <string name="editor_msg_record_failed">Recording failed: %1$s</string>
@@ -201,6 +207,7 @@
     <string name="research_empty">No research items yet.</string>
     <string name="research_empty_hint">Share a link from another app here, or tap “+” to capture something.</string>
     <string name="research_load_error">Couldn’t load research: %1$s</string>
+    <string name="research_load_failed">Couldn’t load research. Pull down to refresh.</string>
     <string name="research_add">Add research</string>
     <string name="research_untitled">(untitled)</string>
     <!-- Detail view (tap on an item) -->

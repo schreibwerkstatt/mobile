@@ -30,6 +30,7 @@ class SyncEngine(
         var nowIso: String? = null
 
         var guard = 0
+        var deletionsCapped = false
         while (true) {
             val resp = api.sync(bookId, since, sinceId, limit = 200)
             nowIso = resp.now
@@ -62,6 +63,12 @@ class SyncEngine(
                     if (fresh.isNotEmpty()) db.pageDao().upsertAll(fresh)
                 }
             }
+            // Serverseitige Löschungen nachziehen (idempotent). Lokal-dirty Seiten
+            // bleiben — ihr Pending-Write hat Vorrang (der Flush scheitert dann sichtbar).
+            if (resp.deleted.isNotEmpty()) {
+                db.pageDao().deleteCleanByIds(resp.deleted.map { it.page_id })
+            }
+            if (resp.deleted_has_more) deletionsCapped = true
             // Cursor fortschreiben.
             val prevSince = since
             val prevSinceId = sinceId
@@ -76,6 +83,13 @@ class SyncEngine(
             if (++guard >= MAX_PULL_PAGES) break
         }
 
+        // `deleted` gedeckelt → vollständiger Abgleich über den Baum: nicht-dirty
+        // Seiten, die dort fehlen, sind serverseitig weg.
+        if (deletionsCapped) {
+            val keep = collectPages(api.tree(bookId)).map { it.id }
+            if (keep.isNotEmpty()) db.pageDao().deleteCleanMissing(bookId, keep)
+        }
+
         db.syncCursorDao().put(
             SyncCursorEntity(
                 bookId = bookId,
@@ -88,16 +102,17 @@ class SyncEngine(
 
     /**
      * Flush aller Pending-Writes (Status pending). Delegiert den eigentlichen
-     * PUT an [putOne] (ContentRepository.flushOne), das 409/423 in Status
-     * übersetzt. Liefert Anzahl erfolgreich bestätigter Writes.
+     * PUT an [putOne] (ContentRepository.flushOne), das den Write frisch aus der
+     * Queue liest und 409/423 in Status übersetzt. Liefert Anzahl erfolgreich
+     * bestätigter Writes. Wirft [putOne] (401), bricht der ganze Lauf ab.
      */
     suspend fun flushPending(
-        putOne: suspend (localId: Long, pageId: Long, bookId: Long, html: String, deviceId: String, baseUpdatedAt: String?) -> SaveResult,
+        putOne: suspend (localId: Long) -> SaveResult,
     ): Result<Int> = runCatching {
         val pending = db.pendingWriteDao().byStatus(PendingWriteEntity.STATUS_PENDING)
         var ok = 0
         for (w in pending) {
-            when (putOne(w.localId, w.pageId, w.bookId, w.html, w.deviceId, w.baseUpdatedAt)) {
+            when (putOne(w.localId)) {
                 is SaveResult.Saved -> ok++
                 // Queued/Conflict/Locked: Status wurde in flushOne gesetzt; nicht abbrechen,
                 // damit andere Seiten trotzdem durchlaufen.

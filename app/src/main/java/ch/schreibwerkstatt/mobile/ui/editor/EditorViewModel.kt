@@ -1,10 +1,7 @@
 package ch.schreibwerkstatt.mobile.ui.editor
 
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -22,10 +19,12 @@ import ch.schreibwerkstatt.mobile.ui.tree.orderedPages
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -119,6 +118,15 @@ class EditorViewModel(
     /** Läuft, solange ein Diktat-Segment auf eine Sprechpause überwacht wird. */
     private var monitorJob: Job? = null
 
+    /**
+     * Ziel für erkannten Diktat-Text: die aktuell angezeigte WebView (vom Screen
+     * registriert). Bewusst NICHT im Diktat-Aufruf eingefangen — nach Rotation o.ä.
+     * gibt es eine neue WebView, die alte ist abgeräumt. Text, der ohne Ziel oder vor
+     * `onReady` der neuen WebView ankommt, wartet in [pendingTexts]. Nur Main-Thread.
+     */
+    private var textSink: ((String) -> Unit)? = null
+    private val pendingTexts = ArrayDeque<String>()
+
     /** Server bietet LanguageTool an (`/config`). */
     @Volatile private var serverSpellcheck = false
 
@@ -126,7 +134,7 @@ class EditorViewModel(
     @Volatile private var userSpellcheck = true
 
     private fun syncSpellcheckFlag() {
-        _state.value = _state.value.copy(spellcheckEnabled = serverSpellcheck && userSpellcheck)
+        _state.update { st -> st.copy(spellcheckEnabled = serverSpellcheck && userSpellcheck) }
     }
 
     /**
@@ -155,7 +163,7 @@ class EditorViewModel(
             repo.openConflict(pageId)?.let { w ->
                 val c = EditorEvent.Conflict(w.note, null)
                 lastConflict = c
-                _state.value = _state.value.copy(conflict = c, hasOpenConflict = true)
+                _state.update { st -> st.copy(conflict = c, hasOpenConflict = true) }
                 loadConflictPreviews()
             }
         }
@@ -168,10 +176,10 @@ class EditorViewModel(
             // prüfung nur, wenn der Server den LanguageTool-Proxy anbietet.
             runCatching { network.config(base).config() }.onSuccess { cfg ->
                 serverSpellcheck = cfg.languagetool?.enabled == true
-                _state.value = _state.value.copy(
+                _state.update { st -> st.copy(
                     sttEnabled = cfg.stt?.enabled == true,
                     spellcheckDebounceMs = cfg.languagetool?.debounceMs ?: 1500,
-                )
+                ) }
                 syncSpellcheckFlag()
             }
 
@@ -188,32 +196,6 @@ class EditorViewModel(
             }
         }
 
-        // Presence-Heartbeat: solange der Editor offen ist, regelmässig pingen,
-        // damit die Server-Präsenz nicht abläuft. Endet mit dem viewModelScope.
-        viewModelScope.launch {
-            while (true) {
-                delay(PING_INTERVAL_MS)
-                repo.devicePing(bookId, pageId)
-            }
-        }
-
-        // Schreibzeit-Heartbeat (Pendant zum Web-Heartbeat): meldet regelmässig die
-        // seit dem letzten Ping *anrechenbare* Zeit (idle-gedeckelt, siehe
-        // [WritingTimeTracker]). Im Gegensatz zum Presence-Ping ist er strikt
-        // vordergrund-gated — `repeatOnLifecycle(RESUMED)` cancelt den Block, sobald
-        // die App in den Hintergrund geht, und startet ihn erst bei Rückkehr wieder.
-        // `resume()` beim (Wieder-)Eintritt in RESUMED beginnt ein frisches Segment,
-        // sodass die Hintergrund-/Abwesenheitslücke nie als Schreibzeit mitzählt.
-        viewModelScope.launch {
-            ProcessLifecycleOwner.get().lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-                writingTime.resume()
-                while (true) {
-                    delay(WRITING_TIME_INTERVAL_MS)
-                    writingTime.tick()
-                }
-            }
-        }
-
         // Nachbarseiten für die Wisch-Navigation aus dem Buchbaum bestimmen
         // (best effort; offline/Fehler → keine Wisch-Navigation).
         viewModelScope.launch {
@@ -223,7 +205,7 @@ class EditorViewModel(
                 if (idx >= 0) {
                     val prev = pages.getOrNull(idx - 1)?.let { PageRef(it.id, it.name) }
                     val next = pages.getOrNull(idx + 1)?.let { PageRef(it.id, it.name) }
-                    _state.value = _state.value.copy(prevPage = prev, nextPage = next)
+                    _state.update { st -> st.copy(prevPage = prev, nextPage = next) }
                 }
             }
         }
@@ -234,21 +216,91 @@ class EditorViewModel(
         viewModelScope.launch {
             val base = settings.serverBaseUrlOnce()
             if (base == null) {
-                _state.value = _state.value.copy(bundle = BundleState.Error(BundleError.NO_SERVER_URL))
+                _state.update { st -> st.copy(bundle = BundleState.Error(BundleError.NO_SERVER_URL)) }
                 return@launch
             }
             bundleManager.ensureBundle(base)
                 .onSuccess { ok ->
-                    _state.value = if (ok) _state.value.copy(bundle = BundleState.Ready(bundleManager.bundleDir))
-                    else _state.value.copy(bundle = BundleState.Error(BundleError.UNAVAILABLE))
+                    _state.update {
+                        if (ok) it.copy(bundle = BundleState.Ready(bundleManager.bundleDir))
+                        else it.copy(bundle = BundleState.Error(BundleError.UNAVAILABLE))
+                    }
                 }
-                .onFailure { _state.value = _state.value.copy(bundle = BundleState.Error(BundleError.FAILED, it.message)) }
+                .onFailure { _state.update { st -> st.copy(bundle = BundleState.Error(BundleError.FAILED, it.message)) } }
+        }
+    }
+
+    /**
+     * Presence- und Schreibzeit-Heartbeat, solange DIESE Editor-Seite sichtbar ist.
+     * Der Screen ruft das per `repeatOnLifecycle(RESUMED)` auf seinem Backstack-Eintrag
+     * auf: Geht die App in den Hintergrund oder liegt die Seite (nach Wisch-Navigation
+     * / Verlauf) verdeckt im Backstack, wird der Block gecancelt — sonst würden alle
+     * Editor-VMs im Backstack parallel Schreibzeit verbuchen und Präsenz melden.
+     * `resume()` beim (Wieder-)Eintritt beginnt ein frisches Segment, sodass die
+     * Abwesenheitslücke nie als Schreibzeit mitzählt.
+     */
+    suspend fun runWhileVisible(): Unit = coroutineScope {
+        launch {
+            while (true) {
+                delay(PING_INTERVAL_MS)
+                repo.devicePing(bookId, pageId)
+            }
+        }
+        writingTime.resume()
+        while (true) {
+            delay(WRITING_TIME_INTERVAL_MS)
+            writingTime.tick()
+        }
+    }
+
+    /**
+     * Eine neue WebView wurde erzeugt (Erstaufbau, Rotation, Rückkehr aus dem
+     * Backstack): Bis sie `onReady` meldet, ist der Editor NICHT bereit — sonst feuern
+     * die an [EditorUiState.editorReady] hängenden Effekte (Spellcheck, Schreiblinie)
+     * ins Leere und laufen nach dem echten `onReady` nicht erneut.
+     */
+    fun onWebViewCreated() {
+        _state.update { it.copy(editorReady = false) }
+    }
+
+    /** Diktat-Ziel registrieren (Main-Thread); liefert gepufferten Text nach. */
+    fun attachTextSink(sink: (String) -> Unit) {
+        textSink = sink
+        flushTexts()
+    }
+
+    fun detachTextSink(sink: (String) -> Unit) {
+        if (textSink === sink) textSink = null
+    }
+
+    private fun deliverText(text: String) {
+        pendingTexts.addLast(text)
+        flushTexts()
+    }
+
+    private fun flushTexts() {
+        val sink = textSink ?: return
+        if (!_state.value.editorReady) return
+        while (pendingTexts.isNotEmpty()) sink(pendingTexts.removeFirst())
+    }
+
+    /**
+     * Seite wird verlassen (Wisch-Navigation, Verlauf), das VM bleibt aber im
+     * Backstack: laufende Aufnahme verwerfen, damit das Mikrofon nicht im Hintergrund
+     * weiterläuft (gleiches Verhalten wie beim Schliessen über Zurück → [onCleared]).
+     */
+    fun stopDictationOnLeave() {
+        monitorJob?.cancel()
+        monitorJob = null
+        if (dictation.isRecording) {
+            dictation.cancel()
+            _state.update { it.copy(recording = false, level = 0f) }
         }
     }
 
     /** Bundle-Load erneut versuchen (Retry-Button im Fehlerzustand). */
     fun reloadBundle() {
-        _state.value = _state.value.copy(bundle = BundleState.Loading)
+        _state.update { st -> st.copy(bundle = BundleState.Loading) }
         loadBundle()
     }
 
@@ -298,28 +350,30 @@ class EditorViewModel(
         when (event) {
             // Editor gemountet: erst jetzt greifen JS-Aufrufe von aussen
             // (z.B. das Ein-/Ausschalten der Rechtschreibprüfung).
-            is EditorEvent.Ready -> _state.value = _state.value.copy(editorReady = true)
-            is EditorEvent.SavedOffline -> _state.value = _state.value.copy(message = EditorMsg.SavedOffline)
+            is EditorEvent.Ready -> {
+                _state.update { st -> st.copy(editorReady = true) }
+                // Kommt vom Binder-Thread → auf Main gepufferten Diktat-Text nachliefern.
+                viewModelScope.launch { flushTexts() }
+            }
+            is EditorEvent.SavedOffline -> _state.update { st -> st.copy(message = EditorMsg.SavedOffline) }
             is EditorEvent.Conflict -> {
                 lastConflict = event
-                _state.value = _state.value.copy(
+                _state.update { st -> st.copy(
                     conflict = event,
                     hasOpenConflict = true,
                     message = EditorMsg.Conflict(event.serverEditorName),
-                )
+                ) }
                 loadConflictPreviews()
             }
-            is EditorEvent.Locked -> _state.value =
-                _state.value.copy(message = EditorMsg.Locked(event.lockedByEmail))
-            is EditorEvent.Error -> _state.value =
-                _state.value.copy(message = EditorMsg.EditorError(event.message))
+            is EditorEvent.Locked -> _state.update { st -> st.copy(message = EditorMsg.Locked(event.lockedByEmail)) }
+            is EditorEvent.Error -> _state.update { st -> st.copy(message = EditorMsg.EditorError(event.message)) }
         }
     }
 
-    fun consumeMessage() { _state.value = _state.value.copy(message = null) }
+    fun consumeMessage() { _state.update { st -> st.copy(message = null) } }
 
     /** Zeigt eine bereits aufgelöste Hinweis-Snackbar (z.B. fehlende Mikrofon-Berechtigung). */
-    fun notify(message: String) { _state.value = _state.value.copy(message = EditorMsg.Raw(message)) }
+    fun notify(message: String) { _state.update { st -> st.copy(message = EditorMsg.Raw(message)) } }
 
     // ── Diktat ────────────────────────────────────────────────────────────────
 
@@ -327,20 +381,21 @@ class EditorViewModel(
      * Startet/stoppt die Aufnahme. Beim Start überwacht ein Monitor-Job die
      * Amplitude und beendet das Segment automatisch nach einer Sprechpause
      * (oder an der Maximaldauer). Manuelles Antippen stoppt sofort. In beiden
-     * Fällen wird transkribiert und [onText] mit dem erkannten Text aufgerufen.
+     * Fällen wird transkribiert und der erkannte Text an die aktuelle WebView
+     * geliefert (siehe [attachTextSink]).
      */
-    fun toggleDictation(onText: (String) -> Unit) {
+    fun toggleDictation() {
         if (!dictation.isRecording) {
             dictation.startRecording()
                 .onSuccess {
-                    _state.value = _state.value.copy(recording = true, level = 0f)
-                    monitorJob = viewModelScope.launch { monitorSilence(onText) }
+                    _state.update { st -> st.copy(recording = true, level = 0f) }
+                    monitorJob = viewModelScope.launch { monitorSilence() }
                 }
-                .onFailure { _state.value = _state.value.copy(message = EditorMsg.RecordFailed(it.message ?: "")) }
+                .onFailure { _state.update { st -> st.copy(message = EditorMsg.RecordFailed(it.message ?: "")) } }
         } else {
             monitorJob?.cancel()
             monitorJob = null
-            transcribeCurrentSegment(onText)
+            transcribeCurrentSegment()
         }
     }
 
@@ -349,7 +404,7 @@ class EditorViewModel(
      * eine Pause von [SILENCE_HANGOVER_MS] vorliegt oder [MAX_SEGMENT_MS]
      * erreicht ist. Wird der Job (manueller Stopp) gecancelt, bricht [delay] ab.
      */
-    private suspend fun monitorSilence(onText: (String) -> Unit) {
+    private suspend fun monitorSilence() {
         var spoke = false
         var silentMs = 0L
         var elapsedMs = 0L
@@ -360,8 +415,7 @@ class EditorViewModel(
             // Live-Pegel für die UI normalisieren (0..1). Geglättet, damit die
             // Anzeige nicht flackert: neuer Wert zieht den alten anteilig nach.
             val target = (amplitude / LEVEL_FULL_SCALE).coerceIn(0f, 1f)
-            val smoothed = _state.value.level + (target - _state.value.level) * LEVEL_SMOOTHING
-            _state.value = _state.value.copy(level = smoothed)
+            _state.update { it.copy(level = it.level + (target - it.level) * LEVEL_SMOOTHING) }
             if (amplitude >= SPEECH_AMPLITUDE) {
                 spoke = true
                 silentMs = 0L
@@ -371,26 +425,26 @@ class EditorViewModel(
             val pauseAfterSpeech = spoke && silentMs >= SILENCE_HANGOVER_MS
             if (pauseAfterSpeech || elapsedMs >= MAX_SEGMENT_MS) {
                 monitorJob = null
-                transcribeCurrentSegment(onText)
+                transcribeCurrentSegment()
                 return
             }
         }
     }
 
-    private fun transcribeCurrentSegment(onText: (String) -> Unit) {
+    private fun transcribeCurrentSegment() {
         if (!dictation.isRecording) return
-        _state.value = _state.value.copy(recording = false, transcribing = true, level = 0f)
+        _state.update { st -> st.copy(recording = false, transcribing = true, level = 0f) }
         viewModelScope.launch {
             dictation.stopAndTranscribe(bookId, pageId)
                 .onSuccess { text ->
-                    _state.value = _state.value.copy(transcribing = false)
-                    if (text.isNotBlank()) onText(text)
+                    _state.update { st -> st.copy(transcribing = false) }
+                    if (text.isNotBlank()) deliverText(text)
                 }
                 .onFailure {
-                    _state.value = _state.value.copy(
+                    _state.update { st -> st.copy(
                         transcribing = false,
                         message = it.message?.let { m -> EditorMsg.Raw(m) },
-                    )
+                    ) }
                 }
         }
     }
@@ -401,17 +455,17 @@ class EditorViewModel(
      * bleiben die Vorschau-Felder null (Dialog zeigt dann nur die Aktionen).
      */
     private fun loadConflictPreviews() {
-        _state.value = _state.value.copy(conflictLoading = true)
+        _state.update { st -> st.copy(conflictLoading = true) }
         viewModelScope.launch {
             repo.conflictPreview(pageId)
                 .onSuccess { p ->
-                    _state.value = _state.value.copy(
+                    _state.update { st -> st.copy(
                         conflictLocalText = p.local,
                         conflictServerText = p.server,
                         conflictLoading = false,
-                    )
+                    ) }
                 }
-                .onFailure { _state.value = _state.value.copy(conflictLoading = false) }
+                .onFailure { _state.update { st -> st.copy(conflictLoading = false) } }
         }
     }
 
@@ -420,16 +474,16 @@ class EditorViewModel(
             repo.resolveWithServerVersion(pageId, bookId)
                 .onSuccess { page ->
                     lastConflict = null
-                    _state.value = _state.value.copy(
+                    _state.update { st -> st.copy(
                         conflict = null,
                         hasOpenConflict = false,
                         conflictLocalText = null,
                         conflictServerText = null,
                         message = EditorMsg.ServerResolved,
-                    )
+                    ) }
                     onApplied(page.html ?: "<p><br></p>")
                 }
-                .onFailure { _state.value = _state.value.copy(message = EditorMsg.LoadFailed(it.message ?: "")) }
+                .onFailure { _state.update { st -> st.copy(message = EditorMsg.LoadFailed(it.message ?: "")) } }
         }
     }
 
@@ -443,25 +497,25 @@ class EditorViewModel(
             repo.resolveWithLocalVersion(pageId, bookId)
                 .onSuccess {
                     lastConflict = null
-                    _state.value = _state.value.copy(
+                    _state.update { st -> st.copy(
                         conflict = null,
                         hasOpenConflict = false,
                         conflictLocalText = null,
                         conflictServerText = null,
                         message = EditorMsg.LocalResolved,
-                    )
+                    ) }
                 }
-                .onFailure { _state.value = _state.value.copy(message = EditorMsg.LoadFailed(it.message ?: "")) }
+                .onFailure { _state.update { st -> st.copy(message = EditorMsg.LoadFailed(it.message ?: "")) } }
         }
     }
 
     /** Dialog schliessen, aber den offenen Konflikt-Hinweis (Topbar) bewusst behalten. */
-    fun dismissConflict() { _state.value = _state.value.copy(conflict = null) }
+    fun dismissConflict() { _state.update { st -> st.copy(conflict = null) } }
 
     /** Den weggetippten Konflikt-Dialog über den Topbar-Hinweis erneut öffnen. */
     fun reopenConflict() {
         lastConflict?.let {
-            _state.value = _state.value.copy(conflict = it)
+            _state.update { st -> st.copy(conflict = it) }
             if (_state.value.conflictServerText == null && !_state.value.conflictLoading) loadConflictPreviews()
         }
     }

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ab Android 12 ignoriert die Gerät-zu-Gerät-Übertragung `allowBackup="false"`.
+  Explizit nichts mitnehmen: Die verschlüsselten Token-Prefs wären ohne den
+  (nicht übertragbaren) Keystore-Schlüssel unlesbar, und Cache/Queue gehören zum
+  Geräte-Token des alten Geräts.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

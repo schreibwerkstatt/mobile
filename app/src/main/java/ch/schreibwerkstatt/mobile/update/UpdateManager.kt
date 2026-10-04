@@ -12,6 +12,7 @@ import java.security.MessageDigest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.cancellation.CancellationException
 
 sealed interface UpdateState {
     /** Kein Update-Vorgang sichtbar. */
@@ -105,6 +107,10 @@ class UpdateManager(
                     return@launch
                 }
                 installOrRequestPermission(file, release)
+            } catch (e: CancellationException) {
+                // „Später" während des Downloads (dismiss): kein Fehlerdialog, State
+                // hat dismiss() schon auf Idle gesetzt.
+                throw e
             } catch (e: Exception) {
                 _state.value = UpdateState.Error(e.message ?: "Download fehlgeschlagen")
             }
@@ -127,6 +133,9 @@ class UpdateManager(
                 target.outputStream().use { output ->
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
+                        // Abbruch über dismiss() respektieren: sonst lädt die blockierende
+                        // Schleife weiter und setzt den geschlossenen Dialog wieder auf.
+                        ensureActive()
                         val read = input.read(buffer)
                         if (read == -1) break
                         output.write(buffer, 0, read)
@@ -140,6 +149,7 @@ class UpdateManager(
             // Abgebrochener/unvollständiger Stream: die erwartete Grösse (GitHub-Asset-
             // Grösse bzw. Content-Length) muss exakt getroffen sein, sonst ist die APK
             // korrupt — nicht an den Installer weiterreichen.
+            ensureActive()
             if (total > 0 && downloaded != total) {
                 target.delete()
                 error(appContext.getString(R.string.update_error_incomplete))

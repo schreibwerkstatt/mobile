@@ -22,12 +22,24 @@ class TokenStore(context: Context) {
     // krypto-frei (in Tests ohne Keystore konstruierbar, solange kein Token
     // gelesen/geschrieben wird).
     private val prefs: SharedPreferences by lazy {
+        try {
+            openPrefs(context)
+        } catch (e: Exception) {
+            // Datei da, Keystore-Schlüssel nicht (Restore/Gerätetransfer, Keystore-Reset):
+            // Tink wirft dann bei jedem Start. Unlesbare Datei verwerfen und leer neu
+            // anlegen — das Gerät muss neu gekoppelt werden, statt dauerhaft abzustürzen.
+            context.deleteSharedPreferences(PREFS_NAME)
+            openPrefs(context)
+        }
+    }
+
+    private fun openPrefs(context: Context): SharedPreferences {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
-        EncryptedSharedPreferences.create(
+        return EncryptedSharedPreferences.create(
             context,
-            "sw_secure_token",
+            PREFS_NAME,
             masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
@@ -63,6 +75,7 @@ class TokenStore(context: Context) {
     }
 
     private companion object {
+        const val PREFS_NAME = "sw_secure_token"
         const val KEY_TOKEN = "device_token"
         const val KEY_DEVICE_NAME = "device_name"
         const val KEY_TOKEN_ID = "token_id"

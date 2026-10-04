@@ -27,6 +27,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -70,6 +71,11 @@ fun ResearchCaptureScreen(
     var note by rememberSaveable { mutableStateOf(shared?.note.orEmpty()) }
     var selectedBookId by rememberSaveable { mutableStateOf<Long?>(preselectBookId) }
     var menuExpanded by remember { mutableStateOf(false) }
+
+    // System-Zurück wie der Pfeil oben behandeln: sonst bleibt der geteilte Inhalt im
+    // Activity-State hängen (erneutes Teilen desselben Links wirkte nicht, nach dem
+    // Neu-Koppeln öffnete sich das Formular ungefragt wieder).
+    BackHandler(onBack = onDone)
 
     // Sinnvolle Vorauswahl, sobald die Bücher geladen sind: explizit gewünschtes
     // Buch, sonst das einzige vorhandene. Bei mehreren bleibt die Auswahl offen.

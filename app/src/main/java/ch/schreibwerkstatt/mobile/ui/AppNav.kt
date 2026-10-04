@@ -187,6 +187,16 @@ fun AppNav(
                 onBack = { navController.popBackStack() },
                 onRestored = { restoredPageId ->
                     navController.popBackStack()
+                    // Kam der Verlauf aus dem Editor derselben Seite, diesen alten Eintrag
+                    // ebenfalls entfernen — sonst liegt die Seite doppelt im Backstack und
+                    // Zurück führt auf den veralteten Stand statt in den Baum. Er wird dabei
+                    // nicht neu komponiert, löst also keinen Schliess-Save aus.
+                    val below = navController.currentBackStackEntry
+                    if (below?.destination?.route == Routes.EDITOR &&
+                        below.arguments?.getLong("pageId") == restoredPageId
+                    ) {
+                        navController.popBackStack()
+                    }
                     navController.navigate(Routes.editor(bookId, restoredPageId, title))
                 },
             )

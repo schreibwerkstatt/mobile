@@ -57,6 +57,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ch.schreibwerkstatt.mobile.R
@@ -87,6 +89,11 @@ fun ResearchListScreen(
     val loading by vm.loading.collectAsStateWithLifecycle()
     val loaded by vm.loaded.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
+    val loadFailed by vm.loadFailed.collectAsStateWithLifecycle()
+
+    // Bei jedem Sichtbarwerden neu laden — auch nach der Rückkehr aus „+ Erfassen",
+    // sonst fehlt das gerade gespeicherte Element (das VM lebt im Backstack weiter).
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.refresh() }
     val snackbarHostState = remember { SnackbarHostState() }
     // Ausgewähltes Element für die Detail-Ansicht (Klick auf eine Zeile).
     var detail by remember { mutableStateOf<ResearchItemDto?>(null) }
@@ -124,7 +131,16 @@ fun ResearchListScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            if (items.isEmpty() && loaded) {
+            if (items.isEmpty() && loaded && loadFailed) {
+                Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        stringResource(R.string.research_load_failed),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            } else if (items.isEmpty() && loaded) {
                 Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,

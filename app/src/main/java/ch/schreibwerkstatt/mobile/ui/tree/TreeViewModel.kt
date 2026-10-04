@@ -71,6 +71,13 @@ class TreeViewModel(
     private val _state = MutableStateFlow(TreeUiState(bookId = bookId, calendarMonth = savedMonth))
     val state: StateFlow<TreeUiState> = _state.asStateFlow()
 
+    /**
+     * Tagebuch-Einträge aus dem Room-Cache (Seitennamen `YYYY-MM-DD…`). Fallback für
+     * den Kalender, solange der Server-Baum nicht geladen ist (offline/Fehler) — sonst
+     * liessen sich lokal vorhandene Einträge offline nicht öffnen.
+     */
+    @Volatile private var cachedDiaryEntries: Map<String, Long> = emptyMap()
+
     init {
         // Buchtyp aus dem Cache → entscheidet, ob der Kalender-Modus angeboten wird.
         // Default-Modus = Tagebuch ⇒ Kalender, sofern der Nutzer ihn nicht bewusst
@@ -87,9 +94,16 @@ class TreeViewModel(
         // (wird vom Delta-Pull aktualisiert).
         viewModelScope.launch {
             repo.observePages(bookId).collect { pages ->
-                _state.value = _state.value.copy(
-                    pageUpdatedAt = pages.associate { it.id to it.updatedAt }
-                )
+                val cached = LinkedHashMap<String, Long>()
+                pages.forEach { p -> diaryDateOf(p.name)?.let { cached.putIfAbsent(it, p.id) } }
+                cachedDiaryEntries = cached
+                _state.update {
+                    it.copy(
+                        pageUpdatedAt = pages.associate { p -> p.id to p.updatedAt },
+                        // Ohne geladenen Baum trägt der Cache den Kalender.
+                        diaryEntries = if (it.rows.isEmpty()) cached else it.diaryEntries,
+                    )
+                }
             }
         }
         // Bei (wiederhergestellter) Verbindung erneut pullen + Struktur neu laden.
@@ -135,7 +149,14 @@ class TreeViewModel(
                     it.copy(rows = rows, diaryEntries = diaryEntriesOf(rows), error = null)
                 }
             }
-            .onFailure { e -> _state.update { it.copy(error = e.message) } }
+            .onFailure { e ->
+                _state.update {
+                    it.copy(
+                        error = e.message,
+                        diaryEntries = if (it.rows.isEmpty()) cachedDiaryEntries else it.diaryEntries,
+                    )
+                }
+            }
     }
 
     private var searchJob: Job? = null

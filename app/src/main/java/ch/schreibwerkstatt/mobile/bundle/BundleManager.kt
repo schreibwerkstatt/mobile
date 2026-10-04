@@ -4,6 +4,8 @@ import android.content.Context
 import ch.schreibwerkstatt.mobile.data.net.AuthInterceptor
 import ch.schreibwerkstatt.mobile.data.prefs.TokenStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -37,20 +39,35 @@ class BundleManager(
 
     val bundleDir: File = File(context.filesDir, "editor-bundle")
     private val etagFile: File = File(context.filesDir, "editor-bundle.etag")
+    /** Neues Bundle wird hier fertig entpackt und erst dann gegen [bundleDir] getauscht. */
+    private val stagingDir: File = File(context.filesDir, "editor-bundle.staging")
+    private val retiredDir: File = File(context.filesDir, "editor-bundle.old")
+
+    /**
+     * Jede Editor-Instanz (auch jede Wisch-Navigation) ruft [ensureBundle] — ohne Lock
+     * würden zwei Läufe gleichzeitig dasselbe Verzeichnis entpacken bzw. löschen.
+     */
+    private val lock = Mutex()
 
     /** Liegt ein entpacktes, lauffähiges Bundle vor? */
-    fun isReady(): Boolean = File(bundleDir, "host.html").exists() &&
-        File(bundleDir, "editor-host.css").exists() &&
-        File(bundleDir, "js/editor/focus/standalone.js").exists()
+    fun isReady(): Boolean = isReady(bundleDir)
+
+    private fun isReady(dir: File): Boolean = File(dir, "host.html").exists() &&
+        File(dir, "editor-host.css").exists() &&
+        File(dir, "js/editor/focus/standalone.js").exists()
 
     /**
      * Synchronisiert das Bundle gegen den Server. Liefert true, wenn danach ein
      * lauffähiges Bundle bereitliegt (auch bei 304/Offline mit vorhandenem Cache).
      */
-    suspend fun ensureBundle(baseUrl: String): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun ensureBundle(baseUrl: String): Result<Boolean> = lock.withLock {
+        withContext(Dispatchers.IO) { syncBundle(baseUrl) }
+    }
+
+    private fun syncBundle(baseUrl: String): Result<Boolean> {
         val url = baseUrl.trimEnd('/') + "/content/editor-bundle.zip"
         val storedEtag = etagFile.takeIf { it.exists() }?.readText()?.trim().orEmpty()
-        try {
+        return try {
             val reqBuilder = Request.Builder().url(url)
             if (storedEtag.isNotEmpty() && isReady()) {
                 reqBuilder.header("If-None-Match", storedEtag)
@@ -69,8 +86,14 @@ class BundleManager(
                         val body = resp.body ?: return@use Result.failure(
                             IllegalStateException("editor-bundle: leerer Body")
                         )
-                        extractZip(body.byteStream())
-                        copyHostPage()
+                        // Erst vollständig in ein Staging-Verzeichnis entpacken und prüfen;
+                        // das laufende Bundle bleibt bis zum Tausch unangetastet. Ein
+                        // abgerissener Download oder eine Nicht-Zip-Antwort (Captive-Portal)
+                        // zerstört so nie das funktionierende Offline-Bundle.
+                        extractZip(body.byteStream(), stagingDir)
+                        copyHostPage(stagingDir)
+                        check(isReady(stagingDir)) { "editor-bundle: unvollständig" }
+                        swapInStaging()
                         resp.header("ETag")?.let { etagFile.writeText(it) }
                         Result.success(isReady())
                     }
@@ -82,18 +105,29 @@ class BundleManager(
                 }
             }
         } catch (e: Exception) {
+            stagingDir.deleteRecursively()
             if (isReady()) { refreshHostPage(); Result.success(true) } else Result.failure(e)
         }
     }
 
-    private fun extractZip(input: java.io.InputStream) {
-        if (bundleDir.exists()) bundleDir.deleteRecursively()
-        bundleDir.mkdirs()
-        val canonicalRoot = bundleDir.canonicalPath
+    /** Fertiges Staging-Bundle per Rename an die Stelle von [bundleDir] setzen. */
+    private fun swapInStaging() {
+        retiredDir.deleteRecursively()
+        if (bundleDir.exists() && !bundleDir.renameTo(retiredDir)) {
+            bundleDir.deleteRecursively()
+        }
+        check(stagingDir.renameTo(bundleDir)) { "editor-bundle: Tausch fehlgeschlagen" }
+        retiredDir.deleteRecursively()
+    }
+
+    private fun extractZip(input: java.io.InputStream, dir: File) {
+        if (dir.exists()) dir.deleteRecursively()
+        dir.mkdirs()
+        val canonicalRoot = dir.canonicalPath
         ZipInputStream(input.buffered()).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
-                val target = File(bundleDir, entry.name)
+                val target = File(dir, entry.name)
                 // Zip-Slip-Schutz.
                 if (!target.canonicalPath.startsWith(canonicalRoot + File.separator) &&
                     target.canonicalPath != canonicalRoot
@@ -113,10 +147,10 @@ class BundleManager(
     }
 
     /** Host-Seite + ihre Styles aus den App-Assets ins Bundle-Root kopieren. */
-    private fun copyHostPage() {
+    private fun copyHostPage(dir: File = bundleDir) {
         for (name in HOST_ASSETS) {
             context.assets.open("editor-host/$name").use { input ->
-                File(bundleDir, name).outputStream().use { input.copyTo(it) }
+                File(dir, name).outputStream().use { input.copyTo(it) }
             }
         }
     }

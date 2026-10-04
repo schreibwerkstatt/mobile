@@ -50,6 +50,22 @@ interface PageDao {
     suspend fun applyServerVersion(id: Long, html: String?, plain: String?, updatedAt: String?, name: String?)
 
     /**
+     * Nur den bestätigten Server-Stand (`updatedAt`) nachführen, lokalen Inhalt und
+     * `dirty` unangetastet lassen — wenn hinter dem gerade bestätigten Write schon ein
+     * neuerer lokaler Edit wartet.
+     */
+    @Query("UPDATE pages SET updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateServerStamp(id: Long, updatedAt: String?)
+
+    /** Serverseitig gelöschte Seiten entfernen — lokal-dirty Seiten bleiben (Pending-Write hat Vorrang). */
+    @Query("DELETE FROM pages WHERE id IN (:ids) AND dirty = 0")
+    suspend fun deleteCleanByIds(ids: List<Long>)
+
+    /** Nicht-dirty Seiten eines Buchs, die im Server-Baum fehlen (Abgleich bei gedeckeltem `deleted`). */
+    @Query("DELETE FROM pages WHERE bookId = :bookId AND dirty = 0 AND id NOT IN (:keepIds)")
+    suspend fun deleteCleanMissing(bookId: Long, keepIds: List<Long>)
+
+    /**
      * Volltextsuche im Seiteninhalt eines Buchs via FTS4 (`pages_fts` MATCH).
      * Liefert pro Treffer einen markup-freien Snippet rund um die Fundstelle.
      * `:match` ist eine fertige FTS-MATCH-Query (siehe ContentRepository).
@@ -93,6 +109,23 @@ interface PendingWriteDao {
 
     @Query("SELECT * FROM pending_writes WHERE pageId = :pageId ORDER BY createdAt DESC LIMIT 1")
     suspend fun latestForPage(pageId: Long): PendingWriteEntity?
+
+    @Query("SELECT * FROM pending_writes WHERE localId = :localId")
+    suspend fun byId(localId: Long): PendingWriteEntity?
+
+    @Query("SELECT * FROM pending_writes WHERE pageId = :pageId AND status = :status ORDER BY createdAt DESC LIMIT 1")
+    suspend fun pendingForPage(pageId: Long, status: String = PendingWriteEntity.STATUS_PENDING): PendingWriteEntity?
+
+    /** Von einem bestätigten Save überholte conflict/locked/failed-Zeilen einer Seite aufräumen. */
+    @Query("DELETE FROM pending_writes WHERE pageId = :pageId AND status != :status")
+    suspend fun deleteSettledForPage(pageId: Long, status: String = PendingWriteEntity.STATUS_PENDING)
+
+    /** Basis eines (neueren) Pending-Writes auf den gerade bestätigten Server-Stand heben. */
+    @Query("UPDATE pending_writes SET baseUpdatedAt = :baseUpdatedAt WHERE pageId = :pageId AND status = :status")
+    suspend fun rebasePending(pageId: Long, baseUpdatedAt: String?, status: String = PendingWriteEntity.STATUS_PENDING)
+
+    @Query("SELECT COUNT(*) FROM pending_writes")
+    suspend fun count(): Int
 
     fun observePending(): Flow<List<PendingWriteEntity>> = observeByStatus(PendingWriteEntity.STATUS_PENDING)
 

@@ -52,15 +52,23 @@ class DictationController(
         } else {
             MediaRecorder()
         }
-        rec.apply {
-            setAudioSource(MediaRecorder.AudioSource.MIC)
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            setAudioSamplingRate(16_000)      // Whisper-freundlich
-            setAudioEncodingBitRate(64_000)   // ~8 KB/s → bei 30 s deutlich < 5 MB
-            setOutputFile(file.absolutePath)
-            prepare()
-            start()
+        try {
+            rec.apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setAudioSamplingRate(16_000)      // Whisper-freundlich
+                setAudioEncodingBitRate(64_000)   // ~8 KB/s → bei 30 s deutlich < 5 MB
+                setOutputFile(file.absolutePath)
+                prepare()
+                start()
+            }
+        } catch (e: Exception) {
+            // Mikrofon belegt (z.B. Telefonat) o.ä.: Recorder + angelegte Datei freigeben,
+            // sonst bleibt die native Instanz bis zum GC hängen.
+            runCatching { rec.release() }
+            runCatching { file.delete() }
+            throw e
         }
         recorder = rec
         outputFile = file
@@ -69,6 +77,12 @@ class DictationController(
     /** Aufnahme stoppen und das Segment transkribieren. Liefert den erkannten Text. */
     suspend fun stopAndTranscribe(bookId: Long, pageId: Long): Result<String> {
         val file = stopRecorder() ?: return Result.failure(IllegalStateException("Keine Aufnahme"))
+        if (file.length() == 0L) {
+            // stop() direkt nach start() wirft und hinterlässt keine gültige Datei — nichts
+            // senden (der Server meldete sonst irreführend „Audioformat nicht unterstützt").
+            runCatching { file.delete() }
+            return Result.success("")
+        }
         return transcribe(file, bookId, pageId).also { runCatching { file.delete() } }
     }
 
@@ -80,9 +94,14 @@ class DictationController(
     private fun stopRecorder(): File? {
         val rec = recorder ?: return null
         recorder = null
-        runCatching { rec.stop() }
+        val stopped = runCatching { rec.stop() }.isSuccess
         runCatching { rec.release() }
-        return outputFile.also { outputFile = null }
+        val file = outputFile.also { outputFile = null }
+        if (!stopped) {
+            // Kein gültiges Segment (zu kurz/Fehler) → Datei verwerfen statt senden.
+            file?.let { runCatching { it.writeBytes(ByteArray(0)) } }
+        }
+        return file
     }
 
     private suspend fun transcribe(file: File, bookId: Long, pageId: Long): Result<String> =

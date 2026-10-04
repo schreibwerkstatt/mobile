@@ -1,6 +1,6 @@
 # schreibwerkstatt-mobile
 
-Native **Android-Client** (Kotlin/Jetpack Compose) zur Web-App **schreibwerkstatt**. Die App ist ein dünner, offline-fähiger Client: Sie hält **keine** eigene Geschäftslogik für Buchinhalte, sondern liest/schreibt ausschliesslich über die HTTP-API des Servers und cached lokal in Room. Inhalte (Bücher/Kapitel/Seiten), Authentifizierung, STT-Diktat und der Focus-Editor leben serverseitig — die App rendert und synchronisiert sie nur.
+Native **Android-Client** (Kotlin/Jetpack Compose) zur Web-App **schreibwerkstatt**. Die App ist ein dünner, offline-fähiger Client: Sie hält **keine** eigene Geschäftslogik für Buchinhalte, sondern liest/schreibt ausschliesslich über die HTTP-API des Servers und cached lokal in Room. Inhalte (Bücher/Kapitel/Abschnitte), Authentifizierung, STT-Diktat und der Focus-Editor leben serverseitig — die App rendert und synchronisiert sie nur.
 
 **Mutterprojekt:** [`/Users/bd/ClaudeProjects/schreibwerkstatt`](/Users/bd/ClaudeProjects/schreibwerkstatt) (Node.js/SQLite-Server + Web-Frontend). Dort: `CLAUDE.md`, `README.md` (Deployment/Env), `docs/`. Die Server-API ist der **Vertrag** dieser App — siehe Harte Regel „Server-API gehört dem Mutterprojekt".
 
@@ -63,6 +63,7 @@ Sammel-Task und deckt beide ab.
 - **Cleartext-HTTP ist absichtlich erlaubt** ([network_security_config.xml](app/src/main/res/xml/network_security_config.xml)), weil die Server-URL self-hosted/variabel ist (LAN ohne TLS). Für produktive Deployments HTTPS verwenden — diese Begründung bleibt, nicht „aufräumen".
 
 - **i18n:** User-sichtbare Strings als `@string/`-Ressourcen ([res/values/strings.xml](app/src/main/res/values/strings.xml)), nicht hartcodiert.
+  - **Terminologie (wie im Mutterprojekt):** Die Gliederungseinheit (Code/DB/API: `page`/`pages`, `pageId`, `content/pages/{id}`) heisst im UI **«Abschnitt»** / **«section»**, nie «Seite»/«page». «Seite» nur für Druck-/Webseiten. Bezeichner und Routen bleiben `page`. **Why:** Eine Gliederungseinheit ist beliebig lang, «Seite» kollidiert mit der Druckseite; die App soll dieselben Begriffe zeigen wie Web-UI und Editor-Bundle.
 
 - **Doku-Stil dieser Datei:** Nur **aktueller Stand**. Keine Historie, kein „vorher war …", keine Migrationsnarrative — dafür gibt es `git log`. Begründungen (**Why**) für aktuelle Constraints bleiben.
 

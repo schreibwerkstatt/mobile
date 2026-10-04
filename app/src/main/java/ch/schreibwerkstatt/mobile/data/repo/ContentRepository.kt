@@ -22,10 +22,13 @@ import ch.schreibwerkstatt.mobile.data.net.dto.TreePageDto
 import java.util.Locale
 import androidx.room.withTransaction
 import ch.schreibwerkstatt.mobile.data.prefs.SettingsStore
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import okhttp3.ResponseBody
+import kotlin.coroutines.cancellation.CancellationException
 import retrofit2.Response
 
 /**
@@ -217,6 +220,8 @@ class ContentRepository(
         if (cached != null && cached.dirty) return@runCatching cached
         val dto = try {
             net.content(baseUrl()).page(pageId)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             cached ?: throw e
             return@runCatching cached
@@ -231,8 +236,18 @@ class ContentRepository(
             updatedAt = dto.updated_at,
             dirty = false,
         )
-        db.pageDao().upsert(entity)
-        entity
+        // Dirty-Recheck + Upsert atomar: während des Netzabrufs kann ein Save (z.B. der
+        // Close-Save der vorherigen Editor-Instanz bei Rotation) die Seite dirty gemacht
+        // haben — die darf nie mit Server-Stand überschrieben werden.
+        db.withTransaction {
+            val current = db.pageDao().byId(pageId)
+            if (current != null && current.dirty) {
+                current
+            } else {
+                db.pageDao().upsert(entity)
+                entity
+            }
+        }
     }
 
     /**
@@ -241,15 +256,16 @@ class ContentRepository(
      */
     suspend fun savePage(pageId: Long, bookId: Long, html: String): SaveResult {
         val deviceId = settings.deviceId()
-        // Basis-Stand VOR der lokalen Mutation festhalten: updateHtml lässt updatedAt
-        // unberührt, hier steht also der zuletzt bestätigte Server-Stand (dirty-Seiten
-        // werden vom Sync-Pull nie überschrieben). Dieser Snapshot geht als
-        // expected_updated_at mit, damit der Server einen Fremd-Save als 409 erkennt.
-        val baseUpdatedAt = db.pageDao().byId(pageId)?.updatedAt
         // 1) Lokal persistieren (dirty) + Queue konsolidieren — ATOMAR, damit nach einem
         //    Prozess-Tod/Cancel nie eine dirty-Seite OHNE zugehörigen Pending-Write
         //    zurückbleibt (die sonst weder gepusht noch gepullt würde → eingefroren).
         val localId = db.withTransaction {
+            // Basis-Stand in derselben Transaktion VOR der lokalen Mutation lesen:
+            // updateHtml lässt updatedAt unberührt, hier steht also der zuletzt
+            // bestätigte Server-Stand. Geht als expected_updated_at mit, damit der Server
+            // einen Fremd-Save als 409 erkennt. Bestätigt ein gerade laufender Flush
+            // danach einen älteren Write, hebt er diese Basis nach (siehe flushOne).
+            val baseUpdatedAt = db.pageDao().byId(pageId)?.updatedAt
             db.pageDao().updateHtml(pageId, html, HtmlText.toPlain(html), dirty = true)
             db.pendingWriteDao().deletePendingForPage(pageId)
             db.pendingWriteDao().insert(
@@ -264,36 +280,72 @@ class ContentRepository(
             )
         }
         // 2) Online-Versuch (serialisiert gegen andere Flushes/Pulls).
-        return syncMutex.withLock { flushOne(localId, pageId, bookId, html, deviceId, baseUpdatedAt) }
+        return syncMutex.withLock {
+            try {
+                flushOne(localId)
+            } catch (e: AuthLostException) {
+                SaveResult.Queued   // bleibt pending, wird nach dem Neu-Koppeln geflusht
+            }
+        }
     }
 
     /**
      * Einzelnen Pending-Write gegen den Server schicken. Lock-freie Kern-Primitive —
      * der Aufrufer hält bereits [syncMutex] (savePage / flushPending / resolve*).
+     *
+     * Der Write wird erst HIER (unter dem Lock) frisch aus der Queue gelesen: Ein
+     * Snapshot von vor dem Lock könnte inzwischen von einem neueren Save ersetzt oder
+     * von einem vorherigen Flush umbasiert worden sein. Ist er weg, wurde er überholt —
+     * der neuere Write meldet sein eigenes Resultat.
+     *
+     * @param forceBase überschreibt `expected_updated_at` (bewusstes Überschreiben
+     *   des Server-Stands bei „lokal gewinnt").
+     * @throws AuthLostException bei 401 — der Write bleibt `pending`.
      */
-    private suspend fun flushOne(
-        localId: Long,
-        pageId: Long,
-        bookId: Long,
-        html: String,
-        deviceId: String,
-        baseUpdatedAt: String?,
-    ): SaveResult {
+    private suspend fun flushOne(localId: Long, forceBase: String? = null): SaveResult {
+        val w = db.pendingWriteDao().byId(localId) ?: return SaveResult.Queued
+        val pageId = w.pageId
         val resp: Response<ch.schreibwerkstatt.mobile.data.net.dto.PageDto> = try {
             net.content(baseUrl()).savePage(
                 pageId,
-                SavePageRequest(html = html, device_id = deviceId, expected_updated_at = baseUpdatedAt),
+                SavePageRequest(
+                    html = w.html,
+                    device_id = w.deviceId,
+                    expected_updated_at = forceBase ?: w.baseUpdatedAt,
+                ),
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return SaveResult.Queued   // offline → bleibt in der Queue
         }
         return when {
             resp.isSuccessful -> {
                 val dto = resp.body()
-                val serverHtml = dto?.html ?: html
-                db.pageDao().applyServerVersion(pageId, serverHtml, HtmlText.toPlain(serverHtml), dto?.updated_at, dto?.name)
-                db.pendingWriteDao().delete(localId)
-                SaveResult.Saved(db.pageDao().byId(pageId)!!)
+                val serverHtml = dto?.html ?: w.html
+                db.withTransaction {
+                    db.pendingWriteDao().delete(localId)
+                    // Von diesem Erfolg überholte conflict/locked/failed-Zeilen weg, sonst
+                    // meldet openConflict beim Wiederöffnen einen längst erledigten Konflikt.
+                    db.pendingWriteDao().deleteSettledForPage(pageId)
+                    if (db.pendingWriteDao().pendingForPage(pageId) == null) {
+                        db.pageDao().applyServerVersion(pageId, serverHtml, HtmlText.toPlain(serverHtml), dto?.updated_at, dto?.name)
+                    } else {
+                        // Während des PUT kam ein neuerer lokaler Save dazu: Er baut auf
+                        // diesem Write auf, also seine Basis auf den eben bestätigten
+                        // Server-Stand heben (sonst 409 gegen den eigenen Save). Lokaler
+                        // Inhalt und dirty bleiben — der neuere Write hat Vorrang.
+                        db.pageDao().updateServerStamp(pageId, dto?.updated_at)
+                        db.pendingWriteDao().rebasePending(pageId, dto?.updated_at)
+                    }
+                }
+                db.pageDao().byId(pageId)?.let { SaveResult.Saved(it) } ?: SaveResult.Queued
+            }
+            resp.code() == 401 -> {
+                // Token ungültig (der AuthInterceptor hat es schon verworfen). NICHT als
+                // failed parken — sonst würde der Write nach dem Neu-Koppeln nie mehr
+                // versucht und die dirty-Seite fröre ein.
+                throw AuthLostException()
             }
             resp.code() == 409 -> {
                 val c = parseError(resp.errorBody(), PageConflictDto.serializer())
@@ -350,12 +402,20 @@ class ContentRepository(
     suspend fun resolveWithServerVersion(pageId: Long, bookId: Long): Result<PageEntity> = runCatching {
         syncMutex.withLock {
             val dto = net.content(baseUrl()).page(pageId)
-            db.pageDao().applyServerVersion(pageId, dto.html, HtmlText.toPlain(dto.html), dto.updated_at, dto.name)
             // Alle Pending-Writes der Seite verwerfen (auch verwaiste conflict/failed-Zeilen),
             // sonst maskiert eine liegen gebliebene Zeile den aufgelösten Konflikt.
-            db.pendingWriteDao().deleteAllForPage(pageId)
-            db.pageDao().byId(pageId)!!
+            // Atomar mit dem Cache-Update: ein dazwischen fallender Save liesse sonst eine
+            // dirty-Seite ohne Pending-Write zurück (eingefroren).
+            applyServerVersionDiscardingQueue(pageId, dto.html, dto.updated_at, dto.name)
         }
+    }
+
+    private suspend fun applyServerVersionDiscardingQueue(
+        pageId: Long, html: String?, updatedAt: String?, name: String?,
+    ): PageEntity = db.withTransaction {
+        db.pageDao().applyServerVersion(pageId, html, HtmlText.toPlain(html), updatedAt, name)
+        db.pendingWriteDao().deleteAllForPage(pageId)
+        db.pageDao().byId(pageId) ?: error("Seite $pageId nicht im Cache")
     }
 
     /**
@@ -385,20 +445,8 @@ class ContentRepository(
             val pending = db.pendingWriteDao().latestForPage(pageId)
                 ?: error("Kein lokaler Stand für Seite $pageId")
             val serverUpdatedAt = net.content(baseUrl()).page(pageId).updated_at
-            val result = flushOne(
-                localId = pending.localId,
-                pageId = pageId,
-                bookId = bookId,
-                html = pending.html,
-                deviceId = pending.deviceId,
-                baseUpdatedAt = serverUpdatedAt,
-            )
-            when (result) {
-                is SaveResult.Saved -> {
-                    // Evtl. ältere verwaiste Queue-Zeilen derselben Seite mit aufräumen.
-                    db.pendingWriteDao().deleteAllForPage(pageId)
-                    db.pageDao().byId(pageId)!!
-                }
+            when (val result = flushOne(pending.localId, forceBase = serverUpdatedAt)) {
+                is SaveResult.Saved -> result.page
                 is SaveResult.Conflict -> error("Erneuter Konflikt beim Überschreiben")
                 is SaveResult.Locked -> error("Seite gesperrt")
                 SaveResult.Queued -> error("Server nicht erreichbar")
@@ -430,9 +478,7 @@ class ContentRepository(
             val resp = api.restoreRevision(pageId, revId)
             if (!resp.isSuccessful) error("restore HTTP ${resp.code()}")
             val dto = api.page(pageId)
-            db.pageDao().applyServerVersion(pageId, dto.html, HtmlText.toPlain(dto.html), dto.updated_at, dto.name)
-            db.pendingWriteDao().deleteAllForPage(pageId)
-            db.pageDao().byId(pageId)!!
+            applyServerVersionDiscardingQueue(pageId, dto.html, dto.updated_at, dto.name)
         }
     }
 
@@ -459,10 +505,23 @@ class ContentRepository(
         firstError?.let { throw it }
     }
 
+    /** Ein 401 bricht den Lauf ab (Result.failure); die Writes bleiben pending. */
     suspend fun flushPending(): Result<Int> =
-        syncMutex.withLock { sync.flushPending(::flushOne) }
+        syncMutex.withLock { sync.flushPending { localId -> flushOne(localId) } }
 
     fun observePending() = db.pendingWriteDao().observePending()
+
+    /** Anzahl noch nicht zum Server durchgedrungener Queue-Einträge (jeder Status). */
+    suspend fun unsyncedCount(): Int = db.pendingWriteDao().count()
+
+    /**
+     * Lokalen Cache samt Queue und Sync-Cursorn leeren — beim Koppeln mit einem
+     * ANDEREN Server: Seiten-IDs sind serverlokal, die alte Queue würde sonst fremde
+     * Seiten-IDs gegen den neuen Server flushen.
+     */
+    suspend fun clearLocalData() = syncMutex.withLock {
+        withContext(Dispatchers.IO) { db.clearAllTables() }
+    }
 
     suspend fun devicePing(bookId: Long, pageId: Long?) = runCatching {
         net.content(baseUrl()).devicePing(
@@ -491,6 +550,9 @@ class ContentRepository(
     private fun nowMillis(): Long = System.currentTimeMillis()
 }
 
+/** 401 beim Flush: Token verworfen, der Write bleibt pending bis zum Neu-Koppeln. */
+class AuthLostException : Exception("HTTP 401")
+
 private fun BookDto.toEntity() = BookEntity(
     id = id, name = name, role = role, ownerEmail = owner_email, buchtyp = buchtyp,
 )
@@ -517,7 +579,7 @@ private fun collectChapters(tree: TreeDto): List<ChapterNodeDto> {
 }
 
 /** Alle Seiten des Baums (Top-Level + in Kapiteln). */
-private fun collectPages(tree: TreeDto): List<TreePageDto> =
+internal fun collectPages(tree: TreeDto): List<TreePageDto> =
     tree.topPages + collectChapters(tree).flatMap { it.pages }
 
 private val MONTH_NAMES_DE = arrayOf(

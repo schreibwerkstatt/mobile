@@ -17,27 +17,42 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import ch.schreibwerkstatt.mobile.R
+import kotlinx.coroutines.delay
 import java.time.DayOfWeek
+import java.time.Duration
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
@@ -48,12 +63,19 @@ import java.util.Locale
  * Monats-Kalender für Tagebuch-Bücher. Tage mit vorhandenem Eintrag sind
  * hervorgehoben; Tippen öffnet den Eintrag, Tippen auf einen leeren Tag legt
  * ihn an. Der Button legt (oder öffnet) den Eintrag für heute an.
+ *
+ * [loading]/[error] spiegeln das Laden des Buchbaums, aus dem [entries] stammt:
+ * Solange er fehlt, ist ein leerer Monat KEINE Aussage über vorhandene Einträge —
+ * darum Ladebalken bzw. Fehlerstreifen mit [onRetry] statt stummer Leere.
  */
 @Composable
 fun DiaryCalendar(
     month: YearMonth,
     entries: Map<String, Long>,
     creating: Boolean,
+    loading: Boolean,
+    error: String?,
+    onRetry: () -> Unit,
     onPrevMonth: () -> Unit,
     onNextMonth: () -> Unit,
     onDayClick: (dateIso: String) -> Unit,
@@ -61,7 +83,7 @@ fun DiaryCalendar(
     modifier: Modifier = Modifier,
 ) {
     val locale = Locale.getDefault()
-    val today = LocalDate.now()
+    val today = rememberToday()
     val todayHasEntry = entries.containsKey(today.toString())
 
     Column(
@@ -93,6 +115,28 @@ fun DiaryCalendar(
                     Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = stringResource(R.string.calendar_next_month),
                 )
+            }
+        }
+
+        if (loading) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        } else if (error != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.errorContainer)
+                    .padding(start = 12.dp)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    stringResource(R.string.tree_load_error, error),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+                TextButton(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
             }
         }
 
@@ -132,7 +176,8 @@ fun DiaryCalendar(
 
         Button(
             onClick = onTodayClick,
-            enabled = !creating && !todayHasEntry,
+            // Immer aktiv: öffnet den vorhandenen heutigen Eintrag oder legt ihn an.
+            enabled = !creating,
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
         ) {
             if (creating) {
@@ -141,11 +186,33 @@ fun DiaryCalendar(
                     strokeWidth = 2.dp,
                 )
             } else {
-                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
+                Icon(
+                    if (todayHasEntry) Icons.Filled.Edit else Icons.Filled.Add,
+                    contentDescription = null,
+                    modifier = Modifier.padding(end = 8.dp),
+                )
             }
             Text(stringResource(R.string.calendar_today_entry))
         }
     }
+}
+
+/**
+ * Heutiges Datum, das über Mitternacht und Rückkehr in die App aktuell bleibt.
+ * Der Timer allein genügt nicht: `delay` zählt im Gerätetiefschlaf nicht mit, und
+ * eine Zeitzonen-Änderung verschiebt Mitternacht — darum zusätzlich bei ON_RESUME.
+ */
+@Composable
+private fun rememberToday(): LocalDate {
+    var today by remember { mutableStateOf(LocalDate.now()) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { today = LocalDate.now() }
+    LaunchedEffect(today) {
+        val now = LocalDateTime.now()
+        val nextMidnight = now.toLocalDate().plusDays(1).atStartOfDay()
+        delay(Duration.between(now, nextMidnight).toMillis() + 1_000)
+        today = LocalDate.now()
+    }
+    return today
 }
 
 @Composable
