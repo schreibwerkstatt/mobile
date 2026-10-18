@@ -149,8 +149,10 @@
     <string name="history_source_lektorat">Editing</string>
     <string name="history_source_import">Import</string>
     <string name="history_source_conflict">Conflict</string>
+    <string name="history_source_restore">Restored</string>
     <string name="history_source_sync">Synchronisation</string>
     <string name="history_source_unknown">Unknown</string>
+    <string name="history_pinned">Pinned</string>
 
     <!-- Diary / calendar -->
     <string name="calendar_show">Show calendar</string>

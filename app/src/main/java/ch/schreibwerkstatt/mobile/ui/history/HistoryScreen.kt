@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -183,14 +184,18 @@ private fun RevisionRow(rev: RevisionDto, onClick: () -> Unit) {
     val source = sourceLabel(rev.source)
     val client = rev.client?.takeIf { it.isNotBlank() }
     val author = rev.user_email?.takeIf { it.isNotBlank() }
+    val pinned = (rev.pinned ?: 0) != 0
+    // Benannte Revision: das Label ist der Titel, das Datum rückt in die Meta-Zeile.
+    val title = rev.label?.trim()?.takeIf { pinned && it.isNotEmpty() }
     val meta = buildString {
+        if (title != null) append(formatRevisionTime(rev.created_at)).append(" · ")
         append(source)
         if (client != null) append(" · ").append(client)
         if (author != null) append(" · ").append(author)
         rev.words?.let { append(" · ").append(stringResource(R.string.history_words, it)) }
     }
     ListItem(
-        headlineContent = { Text(formatRevisionTime(rev.created_at)) },
+        headlineContent = { Text(title ?: formatRevisionTime(rev.created_at), maxLines = 1) },
         supportingContent = {
             Text(
                 meta,
@@ -198,7 +203,13 @@ private fun RevisionRow(rev: RevisionDto, onClick: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         },
-        leadingContent = { Icon(Icons.Filled.History, contentDescription = null) },
+        leadingContent = {
+            if (pinned) {
+                Icon(Icons.Filled.PushPin, contentDescription = stringResource(R.string.history_pinned))
+            } else {
+                Icon(Icons.Filled.History, contentDescription = null)
+            }
+        },
         modifier = Modifier.clickable(onClick = onClick),
     )
 }
@@ -328,6 +339,7 @@ private fun sourceLabel(source: String?): String = when (source) {
     "lektorat-apply" -> stringResource(R.string.history_source_lektorat)
     "import" -> stringResource(R.string.history_source_import)
     "conflict" -> stringResource(R.string.history_source_conflict)
+    "restore" -> stringResource(R.string.history_source_restore)
     "bookstack-sync" -> stringResource(R.string.history_source_sync)
     else -> source ?: stringResource(R.string.history_source_unknown)
 }

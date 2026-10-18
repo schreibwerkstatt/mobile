@@ -151,8 +151,10 @@
     <string name="history_source_lektorat">Lektorat</string>
     <string name="history_source_import">Import</string>
     <string name="history_source_conflict">Konflikt</string>
+    <string name="history_source_restore">Wiederhergestellt</string>
     <string name="history_source_sync">Synchronisierung</string>
     <string name="history_source_unknown">Unbekannt</string>
+    <string name="history_pinned">Angeheftet</string>
 
     <!-- Tagebuch / Kalender -->
     <string name="calendar_show">Kalender anzeigen</string>

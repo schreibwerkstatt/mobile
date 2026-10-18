@@ -162,6 +162,10 @@ data class RevisionDto(
     val client: String? = null,
     val created_at: String? = null,
     val summary: String? = null,
+    /** Angeheftet (0/1, ab Vertrag api 2): die Retention löscht sie nie. */
+    val pinned: Int? = null,
+    /** Name einer angehefteten Revision (ab api 2), sonst null. */
+    val label: String? = null,
     /** Voller HTML-Stand – nur in der Detail-Antwort gesetzt. */
     val body_html: String? = null,
 )
