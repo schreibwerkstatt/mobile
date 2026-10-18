@@ -156,6 +156,47 @@
         return el ? el.textContent : null;
       }
 
+      // Caret über setPage hinweg retten. setPage ist für den Abschnittswechsel
+      // gebaut: der Fokus-Eintritt springt ans Ende und hängt einen leeren
+      // Auto-Slot an — Weitergetipptes landete nach einem Merge sonst in einem
+      // neuen Absatz. Der leere Slot bleibt stehen (geht beim Save nicht mit).
+      // Gemerkt wird Block (data-bid) + Klartext-Offset darin: der Merge lässt
+      // den eigenen Block unangetastet, das Fokus-Markup darf sich ändern.
+      function captureCaret() {
+        const root = document.querySelector('.focus-editor__content');
+        const sel = window.getSelection();
+        if (!root || !sel || !sel.rangeCount) return null;
+        const r = sel.getRangeAt(0);
+        if (!root.contains(r.startContainer)) return null;
+        const start = r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentElement;
+        const blk = start && start.closest('[data-bid]');
+        if (!blk || !root.contains(blk)) return null;
+        const pre = document.createRange();
+        pre.selectNodeContents(blk);
+        pre.setEnd(r.startContainer, r.startOffset);
+        return { bid: blk.getAttribute('data-bid'), offset: pre.toString().length,
+                 focused: root.contains(document.activeElement) };
+      }
+      function restoreCaret(c) {
+        const root = document.querySelector('.focus-editor__content');
+        if (!c || !root) return;
+        const blk = root.querySelector('[data-bid="' + CSS.escape(c.bid) + '"]');
+        if (!blk) return;
+        const range = document.createRange();
+        const walker = document.createTreeWalker(blk, NodeFilter.SHOW_TEXT);
+        let rest = c.offset, node, placed = false;
+        while ((node = walker.nextNode())) {
+          if (rest <= node.length) { range.setStart(node, rest); placed = true; break; }
+          rest -= node.length;
+        }
+        if (!placed) { range.selectNodeContents(blk); range.collapse(false); }
+        range.collapse(true);
+        if (c.focused) root.focus({ preventScroll: true });
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+
       window.__sw = {
         nextId() { return 'r' + (++seq); },
         // Aus bridge.savePage: festhalten, welcher Stand gerade gesendet wird.
@@ -271,7 +312,11 @@
             if (!window.__swHandle || !json) return;
             const text = editorText();
             if (text === null || text !== lastSentText) return;
+            const caret = captureCaret();
             window.__swHandle.setPage(JSON.parse(json));
+            // setPage betritt den Fokusmodus per $nextTick (Microtask) neu und
+            // springt dabei ans Ende in den Auto-Slot — erst danach zurücksetzen.
+            if (caret) setTimeout(() => restoreCaret(caret), 0);
           } catch (e) {}
         },
         setGranularity(g) { try { window.__swHandle?.setGranularity(g); } catch (e) {} },
