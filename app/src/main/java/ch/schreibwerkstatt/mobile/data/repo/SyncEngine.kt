@@ -16,11 +16,19 @@ import kotlinx.coroutines.withContext
  * Pull-Schleife: solange `has_more`, mit `cursor {since, since_id}`
  * weiterpaginieren; Cursor in Room persistieren. Erstaufruf ohne Cursor =
  * Baseline (gesamtes Buch).
+ *
+ * [isOpenInEditor]: Abschnitte, die gerade ein Editor zeigt, lässt der Pull aus.
+ * Ihre Basis (`updatedAt`/`baseHtml`) muss dem Stand entsprechen, den der Editor
+ * zeigt — rückte der Pull sie vor, ginge der nächste Save mit passendem Stempel
+ * raus und überschriebe den fremden Stand still, statt auf dem Server zu mergen.
+ * Den Server-Stand holt sich der Editor selbst (siehe ContentRepository
+ * .serverUpdateForEditor).
  */
 class SyncEngine(
     private val db: AppDatabase,
     private val net: NetworkClient,
     private val settings: SettingsStore,
+    private val isOpenInEditor: (pageId: Long) -> Boolean = { false },
 ) {
     suspend fun pullBook(bookId: Long, baseUrl: suspend () -> String): Result<Unit> = runCatching {
         val api = net.content(baseUrl())
@@ -59,7 +67,7 @@ class SyncEngine(
                 // Lokal-dirty Seiten behalten so garantiert ihren Pending-Write-Vorrang.
                 db.withTransaction {
                     val fresh = candidates
-                        .filter { (id, _) -> db.pageDao().byId(id)?.dirty != true }
+                        .filter { (id, _) -> !isOpenInEditor(id) && db.pageDao().byId(id)?.dirty != true }
                         .map { it.second }
                     if (fresh.isNotEmpty()) db.pageDao().upsertAll(fresh)
                 }

@@ -44,7 +44,24 @@ class ContentRepository(
     private suspend fun baseUrl(): String =
         settings.serverBaseUrlOnce() ?: error("Keine Server-URL konfiguriert")
 
-    private val sync by lazy { SyncEngine(db, net, settings) }
+    private val sync by lazy { SyncEngine(db, net, settings, isOpenInEditor = ::isOpenInEditor) }
+
+    /**
+     * Abschnitte, die gerade ein Editor zeigt (Zähler: derselbe Abschnitt kann im
+     * Backstack mehrfach offen sein). Der Delta-Pull lässt sie aus, ihren Server-Stand
+     * holt [serverUpdateForEditor] und übernimmt erst [adoptServerPage], wenn der
+     * Editor ihn eingespielt hat — die Basis eines Saves bleibt so der Stand, den der
+     * Editor zeigt.
+     */
+    private val openInEditor = java.util.concurrent.ConcurrentHashMap<Long, Int>()
+
+    fun editorOpened(pageId: Long) { openInEditor.merge(pageId, 1, Int::plus) }
+
+    fun editorClosed(pageId: Long) {
+        openInEditor.computeIfPresent(pageId) { _, n -> if (n > 1) n - 1 else null }
+    }
+
+    private fun isOpenInEditor(pageId: Long): Boolean = openInEditor.containsKey(pageId)
 
     /**
      * Serialisiert alle Server-gerichteten Sync-Operationen (Push-Flush + Delta-Pull)
@@ -590,6 +607,52 @@ class ContentRepository(
             val dto = api.page(pageId)
             applyServerVersionDiscardingQueue(pageId, dto.html, dto.updated_at, dto.name)
         }
+    }
+
+    // ── Server-Stand für den offenen Editor ──────────────────────────────────
+
+    /**
+     * Neuerer Server-Stand des im Editor offenen Abschnitts, oder null (unverändert,
+     * lokal dirty, offline). Schreibt NICHTS in den Cache: übernommen wird erst per
+     * [adoptServerPage], wenn der Editor den Stand tatsächlich eingespielt hat.
+     * Unter [syncMutex], damit kein Flush dazwischenläuft; dirty wird nach dem
+     * Abruf erneut geprüft (ein Save kann lokal persistiert haben).
+     */
+    suspend fun serverUpdateForEditor(pageId: Long, bookId: Long): PageEntity? = syncMutex.withLock {
+        val cached = db.pageDao().byId(pageId) ?: return@withLock null
+        if (cached.dirty) return@withLock null
+        val dto = try {
+            net.content(baseUrl()).page(pageId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return@withLock null
+        }
+        val stamp = dto.updated_at ?: return@withLock null
+        if (stamp == cached.updatedAt) return@withLock null
+        if (db.pageDao().byId(pageId)?.dirty != false) return@withLock null
+        PageEntity(
+            id = dto.id,
+            bookId = bookId,
+            chapterId = dto.chapter_id ?: cached.chapterId,
+            name = dto.name ?: cached.name,
+            html = dto.html,
+            plain = HtmlText.toPlain(dto.html),
+            updatedAt = stamp,
+            dirty = false,
+            baseHtml = dto.html,
+        )
+    }
+
+    /**
+     * Der Editor hat [page] (aus [serverUpdateForEditor]) eingespielt: jetzt Cache und
+     * Basis nachziehen. Ist der Abschnitt inzwischen dirty, bleibt alles — der
+     * Pending-Write hat Vorrang und sein Push mergt auf dem Server.
+     */
+    suspend fun adoptServerPage(page: PageEntity): Boolean = db.withTransaction {
+        if (db.pageDao().byId(page.id)?.dirty == true) return@withTransaction false
+        db.pageDao().upsert(page)
+        true
     }
 
     // ── Sync (Delegation) ────────────────────────────────────────────────────

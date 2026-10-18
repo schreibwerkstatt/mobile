@@ -156,6 +156,7 @@
         return el ? el.textContent : null;
       }
 
+      // Nur für Bundles ohne replaceContent (siehe applyServerPage):
       // Caret über setPage hinweg retten. setPage ist für den Abschnittswechsel
       // gebaut: der Fokus-Eintritt springt ans Ende und hängt einen leeren
       // Auto-Slot an — Weitergetipptes landete nach einem Merge sonst in einem
@@ -195,6 +196,14 @@
         const sel = window.getSelection();
         sel.removeAllRanges();
         sel.addRange(range);
+      }
+      // Fallback für Bundles ohne replaceContent.
+      function setPageKeepingCaret(page) {
+        const caret = captureCaret();
+        window.__swHandle.setPage(page);
+        // setPage betritt den Fokusmodus per $nextTick (Microtask) neu und
+        // springt dabei ans Ende in den Auto-Slot — erst danach zurücksetzen.
+        if (caret) setTimeout(() => restoreCaret(caret), 0);
       }
 
       window.__sw = {
@@ -307,16 +316,45 @@
         // `merged: true`): den gemergten Stand still einspielen, aber nur, wenn
         // seit dem Absenden nicht weitergeschrieben wurde. Sonst bleibt der
         // Editor-Inhalt; der nächste Save mergt auf dem Server erneut.
+        // Bundles mit `replaceContent` (editorApi 1, additiv) prüfen das selbst
+        // und erhalten Caret, Schreibzeile und Undo-Historie; ältere fallen auf
+        // setPage + Caret-Rettung zurück.
         applyServerPage(json) {
           try {
-            if (!window.__swHandle || !json) return;
+            const h = window.__swHandle;
+            if (!h || !json) return;
+            const page = JSON.parse(json);
+            if (typeof h.replaceContent === 'function') { h.replaceContent(page.html); return; }
             const text = editorText();
             if (text === null || text !== lastSentText) return;
-            const caret = captureCaret();
-            window.__swHandle.setPage(JSON.parse(json));
-            // setPage betritt den Fokusmodus per $nextTick (Microtask) neu und
-            // springt dabei ans Ende in den Auto-Slot — erst danach zurücksetzen.
-            if (caret) setTimeout(() => restoreCaret(caret), 0);
+            setPageKeepingCaret(page);
+          } catch (e) {}
+        },
+        // Sync-Pull: neuerer Server-Stand (anderes Gerät) für den offenen
+        // Abschnitt. Nur über replaceContent — es lehnt ab, wenn seither getippt
+        // wurde, und erhält Caret und Undo. Ohne replaceContent (älteres Bundle)
+        // kein Live-Abgleich; der nächste Save mergt auf dem Server. Die Antwort
+        // geht immer an die native Seite: erst ein `true` zieht den Cache nach.
+        applyPulledPage(json, token) {
+          let applied = false;
+          try {
+            const h = window.__swHandle;
+            if (h && json && typeof h.replaceContent === 'function') {
+              applied = h.replaceContent(JSON.parse(json).html) === true;
+            }
+          } catch (e) {}
+          try { window.SWHost.pulledApplied(String(token), applied); } catch (e) {}
+        },
+        // Konflikt mit „Server-Stand laden" aufgelöst: derselbe Abschnitt, aber
+        // erzwungen — lehnt replaceContent ab (Editor gilt als geändert), ersetzt
+        // setPage trotzdem, der User hat den Server-Stand gewählt.
+        loadServerPage(json) {
+          try {
+            const h = window.__swHandle;
+            if (!h || !json) return;
+            const page = JSON.parse(json);
+            if (typeof h.replaceContent === 'function' && h.replaceContent(page.html)) return;
+            setPageKeepingCaret(page);
           } catch (e) {}
         },
         setGranularity(g) { try { window.__swHandle?.setGranularity(g); } catch (e) {} },

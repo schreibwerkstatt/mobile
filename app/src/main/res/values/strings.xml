@@ -189,6 +189,7 @@
     <!-- Editor-Snackbars (im Screen aus dem ViewModel-Message-Typ aufgelöst). -->
     <string name="editor_msg_saved_offline">Offline gespeichert – wird später synchronisiert.</string>
     <string name="editor_msg_merged">Gespeichert – zwischenzeitliche Änderungen am Server wurden eingearbeitet.</string>
+    <string name="editor_msg_pulled">Änderungen von einem anderen Gerät übernommen.</string>
     <string name="editor_msg_app_update_required">Der Server hat einen neueren Editor – bitte die App aktualisieren.</string>
     <string name="editor_msg_conflict">Konflikt: %1$s hat den Abschnitt geändert.</string>
     <string name="editor_msg_locked">Abschnitt gesperrt durch %1$s.</string>

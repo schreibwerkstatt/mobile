@@ -57,6 +57,8 @@ sealed interface EditorMsg {
     data object SavedOffline : EditorMsg
     /** Save mit fremden Änderungen zusammengeführt (Server-Merge). */
     data object Merged : EditorMsg
+    /** Neuerer Server-Stand (anderes Gerät) in den offenen Editor übernommen. */
+    data object Pulled : EditorMsg
     /** Server-Bundle braucht eine neuere App; das gecachte Bundle läuft weiter. */
     data object AppUpdateRequired : EditorMsg
     /** Konflikt erkannt; [editorName] = Server-Editor (null → „jemand anderem"). */
@@ -164,7 +166,14 @@ class EditorViewModel(
     @Volatile
     private var saveHandoff: CompletableDeferred<Unit>? = null
 
+    /** Bridge der aktuellen WebView (für den Sync-Pull in [runWhileVisible]). */
+    @Volatile private var bridge: EditorBridge? = null
+
     init {
+        // Solange dieses VM lebt, zeigt eine WebView den Abschnitt (auch verdeckt im
+        // Backstack): der Delta-Pull lässt ihn aus, damit die Save-Basis dem
+        // angezeigten Stand entspricht (siehe ContentRepository.editorOpened).
+        repo.editorOpened(pageId)
         // Beim Öffnen einen noch offenen Konflikt (409 beim letzten Save) erneut
         // anzeigen – sonst klebt die dirty-Seite stumm auf dem lokalen Stand.
         // Eigener Launch, damit der Hinweis nicht hinter dem Bundle-Download wartet.
@@ -267,6 +276,14 @@ class EditorViewModel(
                 repo.devicePing(bookId, pageId)
             }
         }
+        // Sync-Pull in den offenen Editor: sofort beim (Wieder-)Eintritt, dann im
+        // Takt. Vor `onReady` gibt es nichts einzuspielen.
+        launch {
+            while (true) {
+                if (_state.value.editorReady) bridge?.pullIntoEditor()
+                delay(PULL_INTERVAL_MS)
+            }
+        }
         writingTime.resume()
         while (true) {
             delay(WRITING_TIME_INTERVAL_MS)
@@ -350,7 +367,7 @@ class EditorViewModel(
             darkTheme = darkTheme,
             spellcheck = spellcheck,
             spellcheckStrings = spellcheckStrings,
-        )
+        ).also { bridge = it }
 
     /**
      * Finalen Save vor dem Schliessen/Navigieren anstossen und nur kurz warten, bis
@@ -378,6 +395,7 @@ class EditorViewModel(
             }
             is EditorEvent.SavedOffline -> _state.update { st -> st.copy(message = EditorMsg.SavedOffline) }
             is EditorEvent.Merged -> _state.update { st -> st.copy(message = EditorMsg.Merged) }
+            is EditorEvent.Pulled -> _state.update { st -> st.copy(message = EditorMsg.Pulled) }
             is EditorEvent.Conflict -> {
                 lastConflict = event
                 _state.update { st -> st.copy(
@@ -543,6 +561,7 @@ class EditorViewModel(
     }
 
     override fun onCleared() {
+        repo.editorClosed(pageId)
         monitorJob?.cancel()
         dictation.cancel()
         super.onCleared()
@@ -551,6 +570,9 @@ class EditorViewModel(
     companion object {
         /** Presence-Heartbeat-Intervall. */
         private const val PING_INTERVAL_MS = 30_000L
+
+        /** Takt, in dem der offene Editor den Server-Stand seines Abschnitts prüft. */
+        private const val PULL_INTERVAL_MS = 30_000L
 
         /** Schreibzeit-Heartbeat-Intervall (vordergrund-gated). */
         private const val WRITING_TIME_INTERVAL_MS = 15_000L

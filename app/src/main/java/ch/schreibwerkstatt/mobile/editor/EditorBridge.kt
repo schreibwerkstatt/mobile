@@ -3,6 +3,7 @@ package ch.schreibwerkstatt.mobile.editor
 import android.util.Log
 import android.webkit.JavascriptInterface
 import ch.schreibwerkstatt.mobile.BuildConfig
+import ch.schreibwerkstatt.mobile.data.db.PageEntity
 import ch.schreibwerkstatt.mobile.data.repo.ContentRepository
 import ch.schreibwerkstatt.mobile.data.repo.SaveResult
 import kotlinx.coroutines.CoroutineScope
@@ -11,6 +12,9 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * JS↔native Brücke für den eingebetteten Focus-Editor. Wird unter dem Namen
@@ -73,6 +77,15 @@ class EditorBridge(
     @Serializable
     private data class BridgePage(val id: Long, val name: String?, val html: String?)
 
+    /** Saves zwischen Übergabe an die Bridge und Ergebnis — solange bietet [pullIntoEditor] nichts an. */
+    private val savesInFlight = AtomicInteger(0)
+
+    /** Server-Stempel des zuletzt angebotenen Pull-Stands (ein abgelehnter wird nicht erneut angeboten). */
+    @Volatile private var lastOffered: String? = null
+
+    /** Angebotene Pull-Stände bis zur Antwort aus host.html ([pulledApplied]). */
+    private val offered = ConcurrentHashMap<String, PageEntity>()
+
     @Serializable
     private data class SavePayload(val id: Long? = null, val name: String? = null, val html: String = "")
 
@@ -98,44 +111,77 @@ class EditorBridge(
         // Übergabe ans Native erfolgt: Close-Barrier freigeben, BEVOR der
         // (potenziell langsame, weil netzgebundene) Persist/Flush startet.
         onSaveStarted()
+        savesInFlight.incrementAndGet()
         // App-Scope: überlebt das Abräumen von WebView/EditorViewModel beim
         // Schliessen/Navigieren, damit ein angestossener Save nie verloren geht.
         saveScope.launch {
-            val payload = runCatching { json.decodeFromString(SavePayload.serializer(), payloadJson) }.getOrNull()
-            if (payload == null) {
-                evalJs("window.__sw.reject('${reqId.esc()}', 'bad payload');")
-                return@launch
-            }
-            when (val res = repo.savePage(pageId, bookId, payload.html)) {
-                is SaveResult.Saved -> {
-                    val out = json.encodeToString(
-                        BridgePage.serializer(),
-                        BridgePage(res.page.id, res.page.name, res.page.html)
-                    )
-                    evalJs("window.__sw.resolve('${reqId.esc()}', ${jsString(out)});")
-                    if (res.merged) {
-                        // Server hat fremde Änderungen eingearbeitet: wie einen frischen
-                        // Server-Stand still einspielen. host.html tut das nur, wenn seit
-                        // dem Absenden nicht weitergetippt wurde (sonst mergt der nächste
-                        // Save erneut auf dem Server).
-                        evalJs("window.__sw && window.__sw.applyServerPage(${jsString(out)});")
-                        onEvent(EditorEvent.Merged)
-                    }
-                }
-                is SaveResult.Queued -> {
-                    // Lokal gespeichert (offline) — Editor darf weitermachen.
-                    evalJs("window.__sw.resolve('${reqId.esc()}', null);")
-                    onEvent(EditorEvent.SavedOffline)
-                }
-                is SaveResult.Conflict -> {
-                    evalJs("window.__sw.resolve('${reqId.esc()}', null);")
-                    onEvent(EditorEvent.Conflict(res.serverEditorName, res.serverUpdatedAt))
-                }
-                is SaveResult.Locked -> {
-                    evalJs("window.__sw.resolve('${reqId.esc()}', null);")
-                    onEvent(EditorEvent.Locked(res.lockedByEmail))
+            try { save(reqId, payloadJson) } finally { savesInFlight.decrementAndGet() }
+        }
+    }
+
+    private suspend fun save(reqId: String, payloadJson: String) {
+        val payload = runCatching { json.decodeFromString(SavePayload.serializer(), payloadJson) }.getOrNull()
+        if (payload == null) {
+            evalJs("window.__sw.reject('${reqId.esc()}', 'bad payload');")
+            return
+        }
+        when (val res = repo.savePage(pageId, bookId, payload.html)) {
+            is SaveResult.Saved -> {
+                val out = json.encodeToString(
+                    BridgePage.serializer(),
+                    BridgePage(res.page.id, res.page.name, res.page.html)
+                )
+                evalJs("window.__sw.resolve('${reqId.esc()}', ${jsString(out)});")
+                if (res.merged) {
+                    // Server hat fremde Änderungen eingearbeitet: wie einen frischen
+                    // Server-Stand still einspielen. host.html tut das nur, wenn seit
+                    // dem Absenden nicht weitergetippt wurde (sonst mergt der nächste
+                    // Save erneut auf dem Server).
+                    evalJs("window.__sw && window.__sw.applyServerPage(${jsString(out)});")
+                    onEvent(EditorEvent.Merged)
                 }
             }
+            is SaveResult.Queued -> {
+                // Lokal gespeichert (offline) — Editor darf weitermachen.
+                evalJs("window.__sw.resolve('${reqId.esc()}', null);")
+                onEvent(EditorEvent.SavedOffline)
+            }
+            is SaveResult.Conflict -> {
+                evalJs("window.__sw.resolve('${reqId.esc()}', null);")
+                onEvent(EditorEvent.Conflict(res.serverEditorName, res.serverUpdatedAt))
+            }
+            is SaveResult.Locked -> {
+                evalJs("window.__sw.resolve('${reqId.esc()}', null);")
+                onEvent(EditorEvent.Locked(res.lockedByEmail))
+            }
+        }
+    }
+
+    /**
+     * Sync-Pull in den offenen Editor: neueren Server-Stand dieses Abschnitts holen
+     * und host.html anbieten (`window.__sw.applyPulledPage` → `replaceContent`).
+     * Cache und Basis zieht erst [pulledApplied] nach, wenn der Editor ihn
+     * tatsächlich eingespielt hat; lehnt er ab (es wurde weitergetippt), mergt der
+     * nächste Save auf dem Server. Während eines Saves wird nichts angeboten.
+     */
+    suspend fun pullIntoEditor() {
+        if (savesInFlight.get() > 0) return
+        val page = repo.serverUpdateForEditor(pageId, bookId) ?: return
+        if (page.updatedAt == lastOffered || savesInFlight.get() > 0) return
+        lastOffered = page.updatedAt
+        val token = UUID.randomUUID().toString()
+        offered[token] = page
+        val out = json.encodeToString(BridgePage.serializer(), BridgePage(page.id, page.name, page.html))
+        evalJs("window.__sw && window.__sw.applyPulledPage(${jsString(out)}, '$token');")
+    }
+
+    /** Antwort aus host.html auf [pullIntoEditor]: eingespielt oder abgelehnt. */
+    @JavascriptInterface
+    fun pulledApplied(token: String, applied: Boolean) {
+        val page = offered.remove(token) ?: return
+        if (!applied) return
+        scope.launch {
+            if (repo.adoptServerPage(page)) onEvent(EditorEvent.Pulled)
         }
     }
 
@@ -234,6 +280,8 @@ sealed interface EditorEvent {
     data object SavedOffline : EditorEvent
     /** Save gelandet, der Server hat ihn mit einem fremden Stand zusammengeführt. */
     data object Merged : EditorEvent
+    /** Neuerer Server-Stand (anderes Gerät) in den offenen Editor übernommen. */
+    data object Pulled : EditorEvent
     data class Conflict(val serverEditorName: String?, val serverUpdatedAt: String?) : EditorEvent
     data class Locked(val lockedByEmail: String?) : EditorEvent
     data class Error(val message: String) : EditorEvent

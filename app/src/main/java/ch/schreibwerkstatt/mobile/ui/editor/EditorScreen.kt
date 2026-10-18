@@ -466,7 +466,7 @@ fun EditorScreen(
                     vm.resolveConflictWithServer { html ->
                         // Server-Stand still in den Editor spielen (kein erneuter Save).
                         val payload = JSONObject().put("id", pageId).put("html", html).toString()
-                        evalJs("window.__sw && window.__sw.setPage(${jsString(payload)});")
+                        evalJs("window.__sw && window.__sw.loadServerPage(${jsString(payload)});")
                     }
                 }) { Text(stringResource(R.string.editor_conflict_load_server)) }
             },
@@ -616,6 +616,7 @@ private fun jsString(value: String): String = JSONObject.quote(value)
 private fun resolveEditorMsg(context: Context, msg: EditorMsg): String = when (msg) {
     EditorMsg.SavedOffline -> context.getString(R.string.editor_msg_saved_offline)
     EditorMsg.Merged -> context.getString(R.string.editor_msg_merged)
+    EditorMsg.Pulled -> context.getString(R.string.editor_msg_pulled)
     EditorMsg.AppUpdateRequired -> context.getString(R.string.editor_msg_app_update_required)
     is EditorMsg.Conflict -> context.getString(
         R.string.editor_msg_conflict,
