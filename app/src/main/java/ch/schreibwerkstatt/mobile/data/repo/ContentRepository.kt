@@ -267,6 +267,11 @@ class ContentRepository(
             // danach einen älteren Write, hebt er diese Basis nach (siehe flushOne).
             val baseUpdatedAt = db.pageDao().byId(pageId)?.updatedAt
             db.pageDao().updateHtml(pageId, html, HtmlText.toPlain(html), dirty = true)
+            // Ersetzt dieser Save einen noch ausstehenden Write, erbt er dessen Kennungen:
+            // War der schon unterwegs und die Antwort ging verloren, steht sein Stand
+            // vielleicht schon am Server — der Flush darf dann nicht gegen sich selbst 409en.
+            val ownSaveIds = db.pendingWriteDao().pendingForPage(pageId)
+                ?.saveIdsForSuccessor().orEmpty()
             db.pendingWriteDao().deletePendingForPage(pageId)
             db.pendingWriteDao().insert(
                 PendingWriteEntity(
@@ -276,6 +281,7 @@ class ContentRepository(
                     deviceId = deviceId,
                     createdAt = nowMillis(),
                     baseUpdatedAt = baseUpdatedAt,
+                    ownSaveIds = ownSaveIds,
                 )
             )
         }
@@ -298,28 +304,55 @@ class ContentRepository(
      * von einem vorherigen Flush umbasiert worden sein. Ist er weg, wurde er überholt —
      * der neuere Write meldet sein eigenes Resultat.
      *
+     * Save-Kennung: `sentAt` wird in derselben Transaktion wie das Lesen gesetzt, BEVOR
+     * der Request rausgeht — ein gleichzeitiger [savePage] sieht den Write damit
+     * entweder noch ungesendet (und löscht ihn, bevor er rausgeht) oder als gesendet
+     * (und erbt seine `saveId`). Ein Retry schickt dieselbe `saveId`.
+     *
      * @param forceBase überschreibt `expected_updated_at` (bewusstes Überschreiben
      *   des Server-Stands bei „lokal gewinnt").
+     * @param verifyConflict bei 409 erst den Server-Stand prüfen (Sicherheitsnetz,
+     *   siehe [isOwnServerState]); false beim daraus folgenden Neu-Senden.
      * @throws AuthLostException bei 401 — der Write bleibt `pending`.
      */
-    private suspend fun flushOne(localId: Long, forceBase: String? = null): SaveResult {
-        val w = db.pendingWriteDao().byId(localId) ?: return SaveResult.Queued
+    private suspend fun flushOne(
+        localId: Long,
+        forceBase: String? = null,
+        verifyConflict: Boolean = true,
+    ): SaveResult {
+        val w = db.withTransaction {
+            db.pendingWriteDao().byId(localId)?.also {
+                if (it.sentAt == null) db.pendingWriteDao().markSent(localId, nowMillis())
+            }
+        } ?: return SaveResult.Queued
         val pageId = w.pageId
+        val api = try {
+            net.content(baseUrl())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return SaveResult.Queued
+        }
         val resp: Response<ch.schreibwerkstatt.mobile.data.net.dto.PageDto> = try {
-            net.content(baseUrl()).savePage(
+            api.savePage(
                 pageId,
                 SavePageRequest(
                     html = w.html,
                     device_id = w.deviceId,
                     expected_updated_at = forceBase ?: w.baseUpdatedAt,
+                    save_id = w.saveId,
+                    own_save_ids = w.ownSaveIds.takeLast(PendingWriteEntity.MAX_OWN_SAVE_IDS),
                 ),
             )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return SaveResult.Queued   // offline → bleibt in der Queue
+            // Offline/Timeout: bleibt in der Queue, saveId + sentAt bleiben — die Antwort
+            // kann verloren sein, obwohl der Server geschrieben hat.
+            return SaveResult.Queued
         }
         return when {
+            // 2xx inkl. save_match "own"/"replay": bestätigt, Basis = updated_at der Antwort.
             resp.isSuccessful -> {
                 val dto = resp.body()
                 val serverHtml = dto?.html ?: w.html
@@ -349,14 +382,23 @@ class ContentRepository(
             }
             resp.code() == 409 -> {
                 val c = parseError(resp.errorBody(), PageConflictDto.serializer())
-                db.pendingWriteDao().setStatus(
+                if (verifyConflict) {
+                    isOwnServerState(api, w)?.let { serverUpdatedAt ->
+                        // Kein Konflikt: Der Server-Stand stammt von einem eigenen Write,
+                        // dessen Antwort verloren ging. Auf seinen Stempel umbasieren und
+                        // neu senden.
+                        db.pendingWriteDao().rebase(localId, serverUpdatedAt)
+                        return flushOne(localId, forceBase = serverUpdatedAt, verifyConflict = false)
+                    }
+                }
+                db.pendingWriteDao().setRejected(
                     localId, PendingWriteEntity.STATUS_CONFLICT, c?.server_editor_name
                 )
                 SaveResult.Conflict(c?.server_updated_at, c?.server_editor_name)
             }
             resp.code() == 423 -> {
                 val l = parseError(resp.errorBody(), PageLockedDto.serializer())
-                db.pendingWriteDao().setStatus(
+                db.pendingWriteDao().setRejected(
                     localId, PendingWriteEntity.STATUS_LOCKED, l?.locked_by_email
                 )
                 SaveResult.Locked(l?.locked_by_email, l?.expires_at)
@@ -376,12 +418,36 @@ class ContentRepository(
                 // Nicht-transienter Client-Fehler (4xx ausser 409/423): erneuter Versuch
                 // hilft nicht → als failed parken.
                 val e = parseError(resp.errorBody(), ApiErrorDto.serializer())
-                db.pendingWriteDao().setStatus(
+                db.pendingWriteDao().setRejected(
                     localId, PendingWriteEntity.STATUS_FAILED, e?.code ?: "HTTP ${resp.code()}"
                 )
                 SaveResult.Queued
             }
         }
+    }
+
+    /**
+     * 409-Sicherheitsnetz: Server-Stand frisch laden; stammt er laut `last_save_id`
+     * von einem Write dieser Queue ([w] selbst oder einer seiner `ownSaveIds`), ist es
+     * kein Konflikt. Liefert dann den Server-`updated_at` als neue Basis, sonst null
+     * (auch wenn der GET scheitert — dann bleibt es beim Konflikt).
+     *
+     * Verglichen wird NUR mit den Kennungen dieser Queue für diesen Abschnitt: Ein Treffer
+     * auf eine fremde Kennung hiesse, den Stand eines anderen Geräts still zu überschreiben.
+     */
+    private suspend fun isOwnServerState(
+        api: ch.schreibwerkstatt.mobile.data.net.ContentApi,
+        w: PendingWriteEntity,
+    ): String? {
+        val server = try {
+            api.page(w.pageId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return null
+        }
+        val last = server.last_save_id ?: return null
+        return server.updated_at.takeIf { last == w.saveId || last in w.ownSaveIds }
     }
 
     /**

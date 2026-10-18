@@ -48,6 +48,14 @@ data class PageDto(
     val chapter_id: Long? = null,
     val html: String? = null,
     val updated_at: String? = null,
+    /**
+     * `save_id` des letzten Writes (GET) bzw. des bestätigten (PUT); null, wenn der
+     * letzte Write keine Kennung trug (anderes Gerät, Web, Job) oder der Server das
+     * Feature nicht kennt.
+     */
+    val last_save_id: String? = null,
+    /** PUT-Antwort: `"replay"` (Wiederholung, nichts geschrieben) / `"own"` (eigener Stand überschrieben). */
+    val save_match: String? = null,
 )
 
 /**
@@ -87,6 +95,14 @@ data class SavePageRequest(
      * PAGE_CONFLICT statt last-write-wins. null = kein Guard (z.B. unbekannte Basis).
      */
     val expected_updated_at: String? = null,
+    /** Kennung dieses Writes (UUID v4); eine Wiederholung trägt dieselbe. */
+    val save_id: String? = null,
+    /**
+     * Kennungen früherer unbeantworteter Writes derselben Queue für diesen Abschnitt seit
+     * [expected_updated_at], älteste zuerst, höchstens 16. Stimmt der Server-`last_save_id`
+     * mit einer überein, ist ein veralteter Stempel kein Konflikt (`save_match: "own"`).
+     */
+    val own_save_ids: List<String>? = null,
 )
 
 /** 409 PAGE_CONFLICT-Body. */

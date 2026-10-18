@@ -120,9 +120,20 @@ interface PendingWriteDao {
     @Query("DELETE FROM pending_writes WHERE pageId = :pageId AND status != :status")
     suspend fun deleteSettledForPage(pageId: Long, status: String = PendingWriteEntity.STATUS_PENDING)
 
-    /** Basis eines (neueren) Pending-Writes auf den gerade bestätigten Server-Stand heben. */
-    @Query("UPDATE pending_writes SET baseUpdatedAt = :baseUpdatedAt WHERE pageId = :pageId AND status = :status")
+    /**
+     * Basis eines (neueren) Pending-Writes auf den gerade bestätigten Server-Stand heben.
+     * Die geerbten `ownSaveIds` liegen alle vor dieser neuen Basis → erledigt.
+     */
+    @Query("UPDATE pending_writes SET baseUpdatedAt = :baseUpdatedAt, ownSaveIds = '[]' WHERE pageId = :pageId AND status = :status")
     suspend fun rebasePending(pageId: Long, baseUpdatedAt: String?, status: String = PendingWriteEntity.STATUS_PENDING)
+
+    /** Einen Write auf einen als eigen erkannten Server-Stand umbasieren (409-Sicherheitsnetz). */
+    @Query("UPDATE pending_writes SET baseUpdatedAt = :baseUpdatedAt, ownSaveIds = '[]' WHERE localId = :localId")
+    suspend fun rebase(localId: Long, baseUpdatedAt: String?)
+
+    /** Ersten Sendeversuch vermerken — VOR dem Request, damit eine verlorene Antwort zählt. */
+    @Query("UPDATE pending_writes SET sentAt = :sentAt WHERE localId = :localId AND sentAt IS NULL")
+    suspend fun markSent(localId: Long, sentAt: Long)
 
     @Query("SELECT COUNT(*) FROM pending_writes")
     suspend fun count(): Int
@@ -134,6 +145,13 @@ interface PendingWriteDao {
 
     @Query("UPDATE pending_writes SET status = :status, note = :note WHERE localId = :localId")
     suspend fun setStatus(localId: Long, status: String, note: String?)
+
+    /**
+     * Vom Server per 4xx abgewiesen: Status setzen und `sentAt` zurücknehmen — die
+     * `saveId` kann nicht mehr der Server-Stand sein, ein Nachfolger erbt sie nicht.
+     */
+    @Query("UPDATE pending_writes SET status = :status, note = :note, sentAt = NULL WHERE localId = :localId")
+    suspend fun setRejected(localId: Long, status: String, note: String?)
 
     @Query("DELETE FROM pending_writes WHERE localId = :localId")
     suspend fun delete(localId: Long)
