@@ -156,6 +156,32 @@ class ContentRepositorySaveIdTest {
         assertTrue(statuses().isEmpty())
     }
 
+    @Test fun `409 safety net matches last_save_id regardless of case`() = runTest {
+        // Gespeicherte Kennung gross (z.B. aus einem Alt-Stand), der Server liefert
+        // `last_save_id` immer klein — muss trotzdem als eigener Stand gelten.
+        val upper = "6F1C2B9E-1234-4ABC-8DEF-0123456789AB"
+        db.pageDao().updateHtml(pageId, "<p>A</p>", "A", dirty = true)
+        db.pendingWriteDao().insert(
+            PendingWriteEntity(pageId = pageId, bookId = bookId, html = "<p>A</p>", deviceId = "d",
+                createdAt = 1, baseUpdatedAt = "t0", saveId = upper, sentAt = 1)
+        )
+        fake.honorOwnSaveIds = false
+        synchronized(fake) { fake.html = "<p>A</p>"; fake.version = 1; fake.lastSaveId = upper.lowercase() }
+
+        assertEquals(1, repo.flushPending().getOrThrow())
+
+        assertEquals("t1", fake.puts.last().expected_updated_at) // mit Server-Stempel neu gesendet
+        assertTrue(statuses().isEmpty())
+        assertFalse(db.pageDao().byId(pageId)!!.dirty)
+    }
+
+    @Test fun `generated save ids are lowercase`() = runTest {
+        fake.dropNextPutResponse = true
+        repo.savePage(pageId, bookId, "<p>A</p>")
+        val id = db.pendingWriteDao().latestForPage(pageId)!!.saveId
+        assertEquals(id.lowercase(), id)
+    }
+
     @Test fun `own_save_ids never carry ids from another section`() = runTest {
         val other = 20L
         db.pageDao().upsert(PageEntity(id = other, bookId = bookId, name = "S2", html = "<p>o</p>", updatedAt = "t0"))

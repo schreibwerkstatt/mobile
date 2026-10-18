@@ -446,8 +446,11 @@ class ContentRepository(
         } catch (e: Exception) {
             return null
         }
+        // Der Server liefert `last_save_id` immer kleingeschrieben; Kotlin erzeugt zwar
+        // ohnehin kleine UUIDs, der Vergleich bleibt trotzdem schreibweisen-unabhängig.
         val last = server.last_save_id ?: return null
-        return server.updated_at.takeIf { last == w.saveId || last in w.ownSaveIds }
+        val own = w.ownSaveIds + w.saveId
+        return server.updated_at.takeIf { own.any { it.equals(last, ignoreCase = true) } }
     }
 
     /**
