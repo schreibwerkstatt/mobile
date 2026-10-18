@@ -57,8 +57,9 @@ dem Server.
 - **Sync:** `GET /content/books/:id/sync?since=&since_id=&limit=` mit Cursor-
   Paginierung (`has_more`); Cursor in Room persistiert. Lokal-dirty Seiten werden
   beim Pull nicht überschrieben.
-- **Speichern:** `PUT /content/pages/:id { html, device_id, source:"main" }`;
-  409 `PAGE_CONFLICT` → Dialog „Server-Version laden / lokal behalten",
+- **Speichern:** `PUT /content/pages/:id { html, device_id, expected_updated_at, base_html, save_id }`;
+  bei veraltetem Stempel mergt der Server mit `base_html` selbst (`200 merged: true`),
+  echte Block-Kollision bzw. 409 `PAGE_CONFLICT` → Dialog „Server-Version laden / lokal behalten",
   423 `PAGE_LOCKED` → Hinweis. Offline → Pending-Write-Queue, später geflusht.
 - **Diktat:** nur wenn `/config` → `stt.enabled`. Aufnahme als `audio/mp4` (AAC),
   POST als rohe Bytes an `POST /stt/transcribe?bookId=&pageId=`
