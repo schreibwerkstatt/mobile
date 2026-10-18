@@ -377,6 +377,7 @@ fun EditorScreen(
                     val msg = when (b.reason) {
                         BundleError.NO_SERVER_URL -> stringResource(R.string.editor_bundle_no_server)
                         BundleError.UNAVAILABLE -> stringResource(R.string.editor_bundle_unavailable)
+                        BundleError.APP_UPDATE_REQUIRED -> stringResource(R.string.editor_bundle_app_update_required)
                         BundleError.FAILED -> stringResource(
                             R.string.editor_bundle_error,
                             b.detail ?: stringResource(R.string.editor_bundle_error_fallback),
@@ -614,6 +615,8 @@ private fun jsString(value: String): String = JSONObject.quote(value)
 /** Löst den lokalisierbaren [EditorMsg]-Typ in den anzuzeigenden Snackbar-Text auf. */
 private fun resolveEditorMsg(context: Context, msg: EditorMsg): String = when (msg) {
     EditorMsg.SavedOffline -> context.getString(R.string.editor_msg_saved_offline)
+    EditorMsg.Merged -> context.getString(R.string.editor_msg_merged)
+    EditorMsg.AppUpdateRequired -> context.getString(R.string.editor_msg_app_update_required)
     is EditorMsg.Conflict -> context.getString(
         R.string.editor_msg_conflict,
         msg.editorName ?: context.getString(R.string.editor_conflict_someone),

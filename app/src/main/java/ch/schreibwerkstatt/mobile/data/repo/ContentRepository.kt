@@ -235,6 +235,7 @@ class ContentRepository(
             plain = HtmlText.toPlain(dto.html),
             updatedAt = dto.updated_at,
             dirty = false,
+            baseHtml = dto.html,
         )
         // Dirty-Recheck + Upsert atomar: während des Netzabrufs kann ein Save (z.B. der
         // Close-Save der vorherigen Editor-Instanz bei Rotation) die Seite dirty gemacht
@@ -265,7 +266,10 @@ class ContentRepository(
             // bestätigte Server-Stand. Geht als expected_updated_at mit, damit der Server
             // einen Fremd-Save als 409 erkennt. Bestätigt ein gerade laufender Flush
             // danach einen älteren Write, hebt er diese Basis nach (siehe flushOne).
-            val baseUpdatedAt = db.pageDao().byId(pageId)?.updatedAt
+            // Das Basis-HTML gehört zu diesem Stempel und geht als base_html mit.
+            val base = db.pageDao().byId(pageId)
+            val baseUpdatedAt = base?.updatedAt
+            val baseHtml = base?.baseHtml
             db.pageDao().updateHtml(pageId, html, HtmlText.toPlain(html), dirty = true)
             // Ersetzt dieser Save einen noch ausstehenden Write, erbt er dessen Kennungen:
             // War der schon unterwegs und die Antwort ging verloren, steht sein Stand
@@ -282,6 +286,7 @@ class ContentRepository(
                     createdAt = nowMillis(),
                     baseUpdatedAt = baseUpdatedAt,
                     ownSaveIds = ownSaveIds,
+                    baseHtml = baseHtml,
                 )
             )
         }
@@ -309,8 +314,13 @@ class ContentRepository(
      * entweder noch ungesendet (und löscht ihn, bevor er rausgeht) oder als gesendet
      * (und erbt seine `saveId`). Ein Retry schickt dieselbe `saveId`.
      *
+     * Basis-HTML: Wo ein `expected_updated_at` mitgeht, geht auch das HTML dieser Basis
+     * als `base_html` mit. Bei veraltetem Stempel mergt der Server dann selbst blockweise
+     * (`200 merged: true`) und lehnt nur bei echter Block-Kollision mit 409 ab.
+     *
      * @param forceBase überschreibt `expected_updated_at` (bewusstes Überschreiben
-     *   des Server-Stands bei „lokal gewinnt").
+     *   des Server-Stands bei „lokal gewinnt", Umbasieren im 409-Sicherheitsnetz).
+     * @param forceBaseHtml das HTML zu [forceBase] (`base_html`); nur mit [forceBase].
      * @param verifyConflict bei 409 erst den Server-Stand prüfen (Sicherheitsnetz,
      *   siehe [isOwnServerState]); false beim daraus folgenden Neu-Senden.
      * @throws AuthLostException bei 401 — der Write bleibt `pending`.
@@ -318,6 +328,7 @@ class ContentRepository(
     private suspend fun flushOne(
         localId: Long,
         forceBase: String? = null,
+        forceBaseHtml: String? = null,
         verifyConflict: Boolean = true,
     ): SaveResult {
         val w = db.withTransaction {
@@ -333,15 +344,19 @@ class ContentRepository(
         } catch (e: Exception) {
             return SaveResult.Queued
         }
+        val expected = forceBase ?: w.baseUpdatedAt
+        val baseHtml = if (forceBase != null) forceBaseHtml else w.baseHtml
         val resp: Response<ch.schreibwerkstatt.mobile.data.net.dto.PageDto> = try {
             api.savePage(
                 pageId,
                 SavePageRequest(
                     html = w.html,
                     device_id = w.deviceId,
-                    expected_updated_at = forceBase ?: w.baseUpdatedAt,
+                    expected_updated_at = expected,
                     save_id = w.saveId,
                     own_save_ids = w.ownSaveIds.takeLast(PendingWriteEntity.MAX_OWN_SAVE_IDS),
+                    // Ohne Stempel prüft der Server nichts, eine Basis wäre bedeutungslos.
+                    base_html = baseHtml?.takeIf { expected != null },
                 ),
             )
         } catch (e: CancellationException) {
@@ -356,23 +371,44 @@ class ContentRepository(
             resp.isSuccessful -> {
                 val dto = resp.body()
                 val serverHtml = dto?.html ?: w.html
-                db.withTransaction {
+                // Server-Merge (`merged: true`): Die Antwort ist ein NEUER Stand, der fremde
+                // Änderungen enthält. Was danach lokal geschrieben wird (Editor, der den
+                // gemergten Stand noch nicht zeigt, oder ein schon wartender neuerer Save),
+                // baut aber auf dem Gesendeten auf. Darum bleibt die Basis das Gesendete mit
+                // dem gesendeten, jetzt veralteten Stempel: Der nächste Push mergt damit
+                // erneut auf dem Server und trägt die fremden Änderungen mit, statt sie mit
+                // passendem Stempel still zu überschreiben. Ändert der Merge den Text nicht
+                // (nur Normalisierung), gilt die Antwort wie ein gewöhnlicher Erfolg. Ein
+                // Replay, dessen Stand vom Gesendeten abweicht, ist ein gemergter Write, dessen
+                // Antwort verloren ging (der Replay selbst trägt kein `merged`).
+                val merged = (dto?.merged == true || dto?.save_match == "replay") && expected != null &&
+                    HtmlText.toPlain(serverHtml) != HtmlText.toPlain(w.html)
+                val nextStamp = if (merged) expected else dto?.updated_at
+                val nextBaseHtml = if (merged) w.html else serverHtml
+                val applied = db.withTransaction {
                     db.pendingWriteDao().delete(localId)
                     // Von diesem Erfolg überholte conflict/locked/failed-Zeilen weg, sonst
                     // meldet openConflict beim Wiederöffnen einen längst erledigten Konflikt.
                     db.pendingWriteDao().deleteSettledForPage(pageId)
                     if (db.pendingWriteDao().pendingForPage(pageId) == null) {
-                        db.pageDao().applyServerVersion(pageId, serverHtml, HtmlText.toPlain(serverHtml), dto?.updated_at, dto?.name)
+                        db.pageDao().applyServerVersion(
+                            pageId, serverHtml, HtmlText.toPlain(serverHtml), nextStamp, dto?.name, nextBaseHtml,
+                        )
+                        true
                     } else {
                         // Während des PUT kam ein neuerer lokaler Save dazu: Er baut auf
                         // diesem Write auf, also seine Basis auf den eben bestätigten
                         // Server-Stand heben (sonst 409 gegen den eigenen Save). Lokaler
-                        // Inhalt und dirty bleiben — der neuere Write hat Vorrang.
-                        db.pageDao().updateServerStamp(pageId, dto?.updated_at)
-                        db.pendingWriteDao().rebasePending(pageId, dto?.updated_at)
+                        // Inhalt und dirty bleiben — der neuere Write hat Vorrang. Nach
+                        // einem Merge: Basis = das Gesendete (siehe oben), der Server mergt
+                        // den neueren Write dann gegen den gemergten Stand.
+                        db.pageDao().updateServerStamp(pageId, nextStamp, nextBaseHtml)
+                        db.pendingWriteDao().rebasePending(pageId, nextStamp, nextBaseHtml)
+                        false
                     }
                 }
-                db.pageDao().byId(pageId)?.let { SaveResult.Saved(it) } ?: SaveResult.Queued
+                db.pageDao().byId(pageId)?.let { SaveResult.Saved(it, merged = merged && applied) }
+                    ?: SaveResult.Queued
             }
             resp.code() == 401 -> {
                 // Token ungültig (der AuthInterceptor hat es schon verworfen). NICHT als
@@ -383,12 +419,15 @@ class ContentRepository(
             resp.code() == 409 -> {
                 val c = parseError(resp.errorBody(), PageConflictDto.serializer())
                 if (verifyConflict) {
-                    isOwnServerState(api, w)?.let { serverUpdatedAt ->
+                    isOwnServerState(api, w)?.let { server ->
                         // Kein Konflikt: Der Server-Stand stammt von einem eigenen Write,
-                        // dessen Antwort verloren ging. Auf seinen Stempel umbasieren und
+                        // dessen Antwort verloren ging. Auf seinen Stand umbasieren und
                         // neu senden.
-                        db.pendingWriteDao().rebase(localId, serverUpdatedAt)
-                        return flushOne(localId, forceBase = serverUpdatedAt, verifyConflict = false)
+                        db.pendingWriteDao().rebase(localId, server.updated_at, server.html)
+                        return flushOne(
+                            localId, forceBase = server.updated_at, forceBaseHtml = server.html,
+                            verifyConflict = false,
+                        )
                     }
                 }
                 db.pendingWriteDao().setRejected(
@@ -429,7 +468,7 @@ class ContentRepository(
     /**
      * 409-Sicherheitsnetz: Server-Stand frisch laden; stammt er laut `last_save_id`
      * von einem Write dieser Queue ([w] selbst oder einer seiner `ownSaveIds`), ist es
-     * kein Konflikt. Liefert dann den Server-`updated_at` als neue Basis, sonst null
+     * kein Konflikt. Liefert dann den Server-Stand als neue Basis, sonst null
      * (auch wenn der GET scheitert — dann bleibt es beim Konflikt).
      *
      * Verglichen wird NUR mit den Kennungen dieser Queue für diesen Abschnitt: Ein Treffer
@@ -438,7 +477,7 @@ class ContentRepository(
     private suspend fun isOwnServerState(
         api: ch.schreibwerkstatt.mobile.data.net.ContentApi,
         w: PendingWriteEntity,
-    ): String? {
+    ): ch.schreibwerkstatt.mobile.data.net.dto.PageDto? {
         val server = try {
             api.page(w.pageId)
         } catch (e: CancellationException) {
@@ -450,7 +489,7 @@ class ContentRepository(
         // ohnehin kleine UUIDs, der Vergleich bleibt trotzdem schreibweisen-unabhängig.
         val last = server.last_save_id ?: return null
         val own = w.ownSaveIds + w.saveId
-        return server.updated_at.takeIf { own.any { it.equals(last, ignoreCase = true) } }
+        return server.takeIf { own.any { it.equals(last, ignoreCase = true) } }
     }
 
     /**
@@ -482,7 +521,7 @@ class ContentRepository(
     private suspend fun applyServerVersionDiscardingQueue(
         pageId: Long, html: String?, updatedAt: String?, name: String?,
     ): PageEntity = db.withTransaction {
-        db.pageDao().applyServerVersion(pageId, html, HtmlText.toPlain(html), updatedAt, name)
+        db.pageDao().applyServerVersion(pageId, html, HtmlText.toPlain(html), updatedAt, name, html)
         db.pendingWriteDao().deleteAllForPage(pageId)
         db.pageDao().byId(pageId) ?: error("Seite $pageId nicht im Cache")
     }
@@ -513,8 +552,10 @@ class ContentRepository(
         syncMutex.withLock {
             val pending = db.pendingWriteDao().latestForPage(pageId)
                 ?: error("Kein lokaler Stand für Seite $pageId")
-            val serverUpdatedAt = net.content(baseUrl()).page(pageId).updated_at
-            when (val result = flushOne(pending.localId, forceBase = serverUpdatedAt)) {
+            val server = net.content(baseUrl()).page(pageId)
+            when (val result = flushOne(
+                pending.localId, forceBase = server.updated_at, forceBaseHtml = server.html,
+            )) {
                 is SaveResult.Saved -> result.page
                 is SaveResult.Conflict -> error("Erneuter Konflikt beim Überschreiben")
                 is SaveResult.Locked -> error("Seite gesperrt")

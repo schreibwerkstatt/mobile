@@ -268,6 +268,151 @@ class ContentRepositorySaveTest {
         assertNull(db.pendingWriteDao().latestForPage(pageId))
     }
 
+    // ── Server-Merge (base_html / merged) ──────────────────────────────────────
+
+    @Test fun `save sends the base html that belongs to expected_updated_at`() = runTest {
+        db.pageDao().upsert(
+            PageEntity(id = pageId, bookId = bookId, name = "S", html = "<p>old</p>", updatedAt = "t0", baseHtml = "<p>old</p>")
+        )
+        api.savePageResponder = { req -> Response.success(PageDto(id = pageId, html = req.html, updated_at = "t1")) }
+
+        repo.savePage(pageId, bookId, "<p>local</p>")
+
+        assertEquals("t0", api.lastSaveRequest?.expected_updated_at)
+        assertEquals("<p>old</p>", api.lastSaveRequest?.base_html)
+        // Bestätigter Stand wird neue Basis.
+        db.pageDao().byId(pageId)!!.let {
+            assertEquals("t1", it.updatedAt)
+            assertEquals("<p>local</p>", it.baseHtml)
+        }
+    }
+
+    @Test fun `unknown base sends no base html`() = runTest {
+        api.savePageResponder = { req -> Response.success(PageDto(id = pageId, html = req.html, updated_at = "t1")) }
+
+        repo.savePage(pageId, bookId, "<p>local</p>")
+
+        assertEquals("t0", api.lastSaveRequest?.expected_updated_at)
+        assertNull(api.lastSaveRequest?.base_html)
+    }
+
+    @Test fun `loadPage stores the server html as base`() = runTest {
+        api.pageResponder = { PageDto(id = it, html = "<p>server</p>", updated_at = "t5") }
+
+        repo.loadPage(pageId, bookId).getOrThrow()
+
+        assertEquals("<p>server</p>", db.pageDao().byId(pageId)!!.baseHtml)
+    }
+
+    @Test fun `merged response is taken over and the next push merges again`() = runTest {
+        db.pageDao().upsert(
+            PageEntity(id = pageId, bookId = bookId, name = "S", html = "<p>old</p>", updatedAt = "t0", baseHtml = "<p>old</p>")
+        )
+        api.savePageResponder = {
+            Response.success(PageDto(id = pageId, name = "S", html = "<p>local</p><p>foreign</p>", updated_at = "t2", merged = true))
+        }
+
+        val res = repo.savePage(pageId, bookId, "<p>local</p>")
+
+        assertTrue("erwartet Saved(merged), war $res", res is SaveResult.Saved && res.merged)
+        db.pageDao().byId(pageId)!!.let {
+            assertFalse(it.dirty)
+            assertEquals("<p>local</p><p>foreign</p>", it.html)
+            // Basis = das Gesendete mit dem gesendeten Stempel: Ein Editor, der den
+            // gemergten Stand noch nicht zeigt, überschreibt so die fremden Änderungen nicht.
+            assertEquals("<p>local</p>", it.baseHtml)
+            assertEquals("t0", it.updatedAt)
+        }
+        assertNull(db.pendingWriteDao().latestForPage(pageId))
+
+        api.savePageResponder = { req -> Response.success(PageDto(id = pageId, html = req.html, updated_at = "t3")) }
+        repo.savePage(pageId, bookId, "<p>local, weiter</p>")
+        assertEquals("t0", api.lastSaveRequest?.expected_updated_at)
+        assertEquals("<p>local</p>", api.lastSaveRequest?.base_html)
+        assertTrue(api.lastSaveRequest?.own_save_ids.orEmpty().isEmpty())
+    }
+
+    @Test fun `merged response does not overwrite a newer local save`() = runTest {
+        db.pageDao().upsert(
+            PageEntity(id = pageId, bookId = bookId, name = "S", html = "<p>old</p>", updatedAt = "t0", baseHtml = "<p>old</p>")
+        )
+        api.savePageResponder = { req ->
+            if (req.html == "<p>A</p>") {
+                // Während der PUT von A läuft, persistiert der Editor lokal B.
+                runBlocking {
+                    db.withTransaction {
+                        db.pageDao().updateHtml(pageId, "<p>B</p>", "B", dirty = true)
+                        db.pendingWriteDao().deletePendingForPage(pageId)
+                        db.pendingWriteDao().insert(
+                            PendingWriteEntity(pageId = pageId, bookId = bookId, html = "<p>B</p>",
+                                deviceId = "d", createdAt = 2, baseUpdatedAt = "t0", baseHtml = "<p>old</p>",
+                                ownSaveIds = listOf(req.save_id!!))
+                        )
+                    }
+                }
+                Response.success(PageDto(id = pageId, html = "<p>A</p><p>foreign</p>", updated_at = "t1", merged = true))
+            } else {
+                Response.success(PageDto(id = pageId, html = req.html, updated_at = "t2"))
+            }
+        }
+
+        val res = repo.savePage(pageId, bookId, "<p>A</p>")
+
+        assertTrue(res is SaveResult.Saved && !res.merged) // Editor nicht umschreiben
+        db.pageDao().byId(pageId)!!.let {
+            assertTrue(it.dirty)
+            assertEquals("<p>B</p>", it.html)
+        }
+        // B baut auf A auf: Basis = A mit dem gesendeten (veralteten) Stempel, und keine
+        // eigene Kennung mehr — sonst überschriebe der Server per save_match "own" den
+        // gemergten Stand samt fremder Änderung.
+        db.pendingWriteDao().latestForPage(pageId)!!.let {
+            assertEquals("t0", it.baseUpdatedAt)
+            assertEquals("<p>A</p>", it.baseHtml)
+            assertTrue(it.ownSaveIds.isEmpty())
+        }
+
+        repo.flushPending().getOrThrow()
+        assertEquals("<p>A</p>", api.lastSaveRequest?.base_html)
+        assertEquals("t0", api.lastSaveRequest?.expected_updated_at)
+    }
+
+    @Test fun `merged flag without a text change counts as a plain success`() = runTest {
+        db.pageDao().upsert(
+            PageEntity(id = pageId, bookId = bookId, name = "S", html = "<p>old</p>", updatedAt = "t0", baseHtml = "<p>old</p>")
+        )
+        api.savePageResponder = {
+            Response.success(PageDto(id = pageId, html = "<p data-bid=\"a1\">local</p>", updated_at = "t2", merged = true))
+        }
+
+        val res = repo.savePage(pageId, bookId, "<p>local</p>")
+
+        assertTrue(res is SaveResult.Saved && !res.merged)
+        db.pageDao().byId(pageId)!!.let {
+            assertEquals("t2", it.updatedAt)
+            assertEquals("<p data-bid=\"a1\">local</p>", it.baseHtml)
+        }
+    }
+
+    @Test fun `409 with merge_conflicts parks the write as conflict`() = runTest {
+        db.pageDao().upsert(
+            PageEntity(id = pageId, bookId = bookId, name = "S", html = "<p>old</p>", updatedAt = "t0", baseHtml = "<p>old</p>")
+        )
+        api.savePageResponder = {
+            FakeContentApi.error(
+                409,
+                """{"error_code":"PAGE_CONFLICT","server_updated_at":"t2","server_editor_name":"Lektor","merge_conflicts":["c1"]}""",
+            )
+        }
+
+        val res = repo.savePage(pageId, bookId, "<p>local</p>")
+
+        assertTrue(res is SaveResult.Conflict)
+        assertEquals("<p>old</p>", api.lastSaveRequest?.base_html)
+        assertEquals(PendingWriteEntity.STATUS_CONFLICT, db.pendingWriteDao().latestForPage(pageId)?.status)
+        assertTrue(db.pageDao().byId(pageId)!!.dirty)
+    }
+
     @Test fun `successful save clears a stale conflict row of the page`() = runTest {
         api.savePageResponder = { FakeContentApi.error(409, """{"error_code":"PAGE_CONFLICT"}""") }
         repo.savePage(pageId, bookId, "<p>a</p>")

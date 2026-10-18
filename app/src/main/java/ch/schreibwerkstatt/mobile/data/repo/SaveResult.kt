@@ -4,8 +4,12 @@ import ch.schreibwerkstatt.mobile.data.db.PageEntity
 
 /** Ergebnis eines Speicherversuchs (PUT /content/pages/:id). */
 sealed interface SaveResult {
-    /** Server-Bestätigung; lokaler Stand = Server-Stand. */
-    data class Saved(val page: PageEntity) : SaveResult
+    /**
+     * Server-Bestätigung; lokaler Stand = Server-Stand. [merged] = der Server hat gegen
+     * einen fremden Stand gemergt und der Cache hat den gemergten Stand übernommen
+     * ([page] enthält fremde Änderungen, die ein offener Editor noch nicht zeigt).
+     */
+    data class Saved(val page: PageEntity, val merged: Boolean = false) : SaveResult
 
     /** Kein Netz/Fehler: lokal gespeichert, Pending-Write liegt in der Queue. */
     data object Queued : SaveResult

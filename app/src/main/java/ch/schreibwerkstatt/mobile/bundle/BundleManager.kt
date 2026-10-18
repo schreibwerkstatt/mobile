@@ -1,7 +1,11 @@
 package ch.schreibwerkstatt.mobile.bundle
 
 import android.content.Context
+import android.util.Log
+import ch.schreibwerkstatt.mobile.data.net.ApiJson
 import ch.schreibwerkstatt.mobile.data.net.AuthInterceptor
+import ch.schreibwerkstatt.mobile.data.net.dto.ApiErrorDto
+import ch.schreibwerkstatt.mobile.data.net.dto.BundleManifestDto
 import ch.schreibwerkstatt.mobile.data.prefs.TokenStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -26,6 +30,13 @@ import java.util.zip.ZipInputStream
  * Der [WebViewAssetLoader] (siehe EditorScreen) serviert [bundleDir] unter
  * https://appassets.androidplatform.net/ — so greift Same-Origin und die
  * relativen Imports (`./js/…`) sowie `/icons.svg` des Bundles funktionieren.
+ *
+ * Bundle-Major: Der Download meldet per `X-Editor-Api` die Majors, die diese Schale
+ * bedienen kann ([SUPPORTED_EDITOR_API]). Passt keiner, antwortet der Server
+ * `409 EDITOR_API_UNSUPPORTED`; ein Bundle, dessen `bundle-manifest.json` einen
+ * fremden `editorApi` trägt, wird ebenso abgewiesen. In beiden Fällen bleibt ein
+ * gecachtes Bundle in Betrieb und [updateRequired] wird gesetzt (Hinweis
+ * „App-Update nötig"); ohne Cache endet [ensureBundle] mit [EditorApiUnsupportedException].
  */
 class BundleManager(
     private val context: Context,
@@ -49,6 +60,13 @@ class BundleManager(
      */
     private val lock = Mutex()
 
+    /**
+     * Der Server liefert nur noch Bundles eines Majors, den diese App-Version nicht
+     * kann. Gesetzt vom letzten [ensureBundle]; ein gecachtes Bundle läuft weiter.
+     */
+    @Volatile var updateRequired: Boolean = false
+        private set
+
     /** Liegt ein entpacktes, lauffähiges Bundle vor? */
     fun isReady(): Boolean = isReady(bundleDir)
 
@@ -69,6 +87,7 @@ class BundleManager(
         val storedEtag = etagFile.takeIf { it.exists() }?.readText()?.trim().orEmpty()
         return try {
             val reqBuilder = Request.Builder().url(url)
+                .header(EDITOR_API_HEADER, SUPPORTED_EDITOR_API.joinToString(","))
             if (storedEtag.isNotEmpty() && isReady()) {
                 reqBuilder.header("If-None-Match", storedEtag)
             }
@@ -80,7 +99,13 @@ class BundleManager(
                         // bundle-versioniert: bei jedem Sync frisch aus den Assets
                         // spiegeln, sonst hinkt sie nach einem App-Update hinterher.
                         refreshHostPage()
+                        updateRequired = false
                         Result.success(isReady())
+                    }
+                    resp.code == 409 && isEditorApiUnsupported(resp.body?.string()) -> {
+                        // Server-Bundle braucht eine neuere Schale: gecachtes Bundle behalten.
+                        Log.w(TAG, "editor-bundle: Server kennt keinen Major aus $SUPPORTED_EDITOR_API (409 EDITOR_API_UNSUPPORTED)")
+                        editorApiUnsupported()
                     }
                     resp.isSuccessful -> {
                         val body = resp.body ?: return@use Result.failure(
@@ -93,8 +118,16 @@ class BundleManager(
                         extractZip(body.byteStream(), stagingDir)
                         copyHostPage(stagingDir)
                         check(isReady(stagingDir)) { "editor-bundle: unvollständig" }
+                        val major = manifestEditorApi(stagingDir)
+                        if (major !in SUPPORTED_EDITOR_API) {
+                            // Server ohne Header-Prüfung, aber Bundle eines fremden Majors.
+                            stagingDir.deleteRecursively()
+                            Log.w(TAG, "editor-bundle: Manifest meldet editorApi $major, die App kann $SUPPORTED_EDITOR_API")
+                            return@use editorApiUnsupported()
+                        }
                         swapInStaging()
                         resp.header("ETag")?.let { etagFile.writeText(it) }
+                        updateRequired = false
                         Result.success(isReady())
                     }
                     else -> {
@@ -108,6 +141,29 @@ class BundleManager(
             stagingDir.deleteRecursively()
             if (isReady()) { refreshHostPage(); Result.success(true) } else Result.failure(e)
         }
+    }
+
+    /** Gecachtes Bundle weiterverwenden (falls vorhanden) und den Update-Hinweis setzen. */
+    private fun editorApiUnsupported(): Result<Boolean> {
+        updateRequired = true
+        return if (isReady()) { refreshHostPage(); Result.success(true) }
+        else Result.failure(EditorApiUnsupportedException())
+    }
+
+    private fun isEditorApiUnsupported(body: String?): Boolean =
+        body?.let { runCatching { ApiJson.decodeFromString(ApiErrorDto.serializer(), it) }.getOrNull() }
+            ?.code == "EDITOR_API_UNSUPPORTED"
+
+    /**
+     * `editorApi` aus `bundle-manifest.json`. Ein Manifest ohne das Feld (Server älter
+     * als der Vertrag) gilt als Major 1, ebenso ein fehlendes/unlesbares — abgewiesen
+     * wird nur ein ausdrücklich fremder Major.
+     */
+    private fun manifestEditorApi(dir: File): Int {
+        val file = File(dir, "bundle-manifest.json")
+        if (!file.exists()) return 1
+        return runCatching { ApiJson.decodeFromString(BundleManifestDto.serializer(), file.readText()) }
+            .getOrNull()?.editorApi ?: 1
     }
 
     /** Fertiges Staging-Bundle per Rename an die Stelle von [bundleDir] setzen. */
@@ -165,8 +221,22 @@ class BundleManager(
         runCatching { copyHostPage() }
     }
 
-    private companion object {
+    companion object {
+        /**
+         * Bundle-Majors (`editorApi`, contract/version.json im Mutterprojekt), die
+         * host.html + EditorBridge bedienen können. Einzige Stelle; ein neuer Major
+         * kommt erst dazu, wenn die Schale ihn kann.
+         */
+        val SUPPORTED_EDITOR_API: List<Int> = listOf(1)
+
+        internal const val EDITOR_API_HEADER = "X-Editor-Api"
+
+        private const val TAG = "BundleManager"
+
         /** App-versionierte Host-Assets, die neben das OTA-Bundle kopiert werden. */
-        val HOST_ASSETS = listOf("host.html", "editor-host.css")
+        private val HOST_ASSETS = listOf("host.html", "editor-host.css")
     }
 }
+
+/** Kein lauffähiges Bundle: der Server liefert nur Majors, die diese App nicht kann. */
+class EditorApiUnsupportedException : IllegalStateException("EDITOR_API_UNSUPPORTED")

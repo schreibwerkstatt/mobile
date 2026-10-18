@@ -24,11 +24,7 @@ open class NetworkClient(
     private val tokenStore: TokenStore,
     private val debug: Boolean,
 ) {
-    private val json = Json {
-        ignoreUnknownKeys = true
-        explicitNulls = false
-        coerceInputValues = true
-    }
+    private val json = ApiJson
 
     @Volatile private var cachedBaseUrl: String? = null
     @Volatile private var cachedRetrofit: Retrofit? = null
@@ -98,6 +94,16 @@ open class NetworkClient(
             VerifyResult.Failed(e.message ?: e.javaClass.simpleName)
         }
     }
+}
+
+/**
+ * Die eine Json-Konfiguration der Server-API (Retrofit-Converter, Fehler-Bodys). Die
+ * Contract-Tests dekodieren die Server-Fixtures mit genau dieser Instanz.
+ */
+internal val ApiJson: Json = Json {
+    ignoreUnknownKeys = true
+    explicitNulls = false
+    coerceInputValues = true
 }
 
 sealed interface VerifyResult {

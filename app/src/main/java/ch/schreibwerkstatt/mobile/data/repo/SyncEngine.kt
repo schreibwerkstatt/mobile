@@ -49,6 +49,7 @@ class SyncEngine(
                             plain = HtmlText.toPlain(p.html),
                             updatedAt = p.updated_at,
                             dirty = false,
+                            baseHtml = p.html,
                         )
                     }
                 }

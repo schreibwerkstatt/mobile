@@ -169,6 +169,7 @@
     <string name="editor_bundle_error_fallback">Bundle error</string>
     <string name="editor_bundle_no_server">No server URL configured</string>
     <string name="editor_bundle_unavailable">Editor bundle unavailable</string>
+    <string name="editor_bundle_app_update_required">This app version no longer matches the server\'s editor. Please update the app.</string>
     <string name="editor_page_fallback_title">Section</string>
     <string name="editor_conflict_title">Conflict</string>
     <string name="editor_conflict_message">%1$s changed this section (%2$s). Compare both versions and choose which one stays:</string>
@@ -183,6 +184,8 @@
     <string name="editor_conflict_indicator">Unresolved conflict – compare versions</string>
     <!-- Editor snackbars (resolved in the screen from the ViewModel message type). -->
     <string name="editor_msg_saved_offline">Saved offline – will sync later.</string>
+    <string name="editor_msg_merged">Saved – changes made on the server in the meantime were merged in.</string>
+    <string name="editor_msg_app_update_required">The server has a newer editor – please update the app.</string>
     <string name="editor_msg_conflict">Conflict: %1$s changed the section.</string>
     <string name="editor_msg_locked">Section locked by %1$s.</string>
     <string name="editor_lock_default">an editor</string>

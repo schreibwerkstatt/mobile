@@ -8,6 +8,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import ch.schreibwerkstatt.mobile.ServiceLocator
 import ch.schreibwerkstatt.mobile.audio.DictationController
 import ch.schreibwerkstatt.mobile.bundle.BundleManager
+import ch.schreibwerkstatt.mobile.bundle.EditorApiUnsupportedException
 import ch.schreibwerkstatt.mobile.data.net.NetworkClient
 import ch.schreibwerkstatt.mobile.data.prefs.SettingsStore
 import ch.schreibwerkstatt.mobile.data.repo.ContentRepository
@@ -30,7 +31,11 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /** Grund für einen fehlgeschlagenen Bundle-Load — Text erst in [EditorScreen] aufgelöst. */
-enum class BundleError { NO_SERVER_URL, UNAVAILABLE, FAILED }
+enum class BundleError {
+    NO_SERVER_URL, UNAVAILABLE, FAILED,
+    /** Kein gecachtes Bundle, und der Server liefert nur Majors, die diese App nicht kann. */
+    APP_UPDATE_REQUIRED,
+}
 
 sealed interface BundleState {
     data object Loading : BundleState
@@ -50,6 +55,10 @@ data class PageRef(val id: Long, val name: String)
  */
 sealed interface EditorMsg {
     data object SavedOffline : EditorMsg
+    /** Save mit fremden Änderungen zusammengeführt (Server-Merge). */
+    data object Merged : EditorMsg
+    /** Server-Bundle braucht eine neuere App; das gecachte Bundle läuft weiter. */
+    data object AppUpdateRequired : EditorMsg
     /** Konflikt erkannt; [editorName] = Server-Editor (null → „jemand anderem"). */
     data class Conflict(val editorName: String?) : EditorMsg
     /** Seite fremd gesperrt; [lockedBy] = E-Mail (null → „Lektorat"). */
@@ -225,8 +234,20 @@ class EditorViewModel(
                         if (ok) it.copy(bundle = BundleState.Ready(bundleManager.bundleDir))
                         else it.copy(bundle = BundleState.Error(BundleError.UNAVAILABLE))
                     }
+                    // Nicht-blockierend: der Editor läuft mit dem gecachten Bundle weiter.
+                    if (ok && bundleManager.updateRequired) {
+                        _state.update { st -> st.copy(message = EditorMsg.AppUpdateRequired) }
+                    }
                 }
-                .onFailure { _state.update { st -> st.copy(bundle = BundleState.Error(BundleError.FAILED, it.message)) } }
+                .onFailure { e ->
+                    _state.update { st ->
+                        st.copy(bundle = if (e is EditorApiUnsupportedException) {
+                            BundleState.Error(BundleError.APP_UPDATE_REQUIRED)
+                        } else {
+                            BundleState.Error(BundleError.FAILED, e.message)
+                        })
+                    }
+                }
         }
     }
 
@@ -356,6 +377,7 @@ class EditorViewModel(
                 viewModelScope.launch { flushTexts() }
             }
             is EditorEvent.SavedOffline -> _state.update { st -> st.copy(message = EditorMsg.SavedOffline) }
+            is EditorEvent.Merged -> _state.update { st -> st.copy(message = EditorMsg.Merged) }
             is EditorEvent.Conflict -> {
                 lastConflict = event
                 _state.update { st -> st.copy(

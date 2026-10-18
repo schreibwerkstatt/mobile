@@ -32,6 +32,13 @@ data class PageEntity(
     val updatedAt: String? = null,
     /** true = lokale, noch nicht bestätigte Änderung (Pending-Write existiert). */
     val dirty: Boolean = false,
+    /**
+     * HTML, auf dem der lokale Stand aufbaut — gehört zu [updatedAt] und geht beim
+     * Queuen als `base_html` in den Pending-Write. Normalerweise der Server-Stand zu
+     * [updatedAt]; nach einem Server-Merge bewusst das zuletzt Gesendete (siehe
+     * ContentRepository.flushOne). null = unbekannt → kein Server-Merge, 409 wie ohne.
+     */
+    val baseHtml: String? = null,
 )
 
 /**
@@ -100,6 +107,12 @@ data class PendingWriteEntity(
      * Server-Stand sein und wird beim Ersetzen nicht in [ownSaveIds] übernommen.
      */
     val sentAt: Long? = null,
+    /**
+     * HTML zu [baseUpdatedAt] (`base_html`): Mit veraltetem Stempel mergt der Server
+     * damit selbst blockweise, statt mit 409 abzulehnen. Wird immer zusammen mit
+     * [baseUpdatedAt] umbasiert. null = unbekannt → kein Server-Merge.
+     */
+    val baseHtml: String? = null,
 ) {
     /** Kennungen, die ein diesen Write ersetzender Nachfolger als `own_save_ids` erbt. */
     fun saveIdsForSuccessor(): List<String> =

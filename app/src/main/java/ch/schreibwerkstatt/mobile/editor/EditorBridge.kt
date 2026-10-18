@@ -113,6 +113,14 @@ class EditorBridge(
                         BridgePage(res.page.id, res.page.name, res.page.html)
                     )
                     evalJs("window.__sw.resolve('${reqId.esc()}', ${jsString(out)});")
+                    if (res.merged) {
+                        // Server hat fremde Änderungen eingearbeitet: wie einen frischen
+                        // Server-Stand still einspielen. host.html tut das nur, wenn seit
+                        // dem Absenden nicht weitergetippt wurde (sonst mergt der nächste
+                        // Save erneut auf dem Server).
+                        evalJs("window.__sw && window.__sw.applyServerPage(${jsString(out)});")
+                        onEvent(EditorEvent.Merged)
+                    }
                 }
                 is SaveResult.Queued -> {
                     // Lokal gespeichert (offline) — Editor darf weitermachen.
@@ -224,6 +232,8 @@ class EditorBridge(
 sealed interface EditorEvent {
     data object Ready : EditorEvent
     data object SavedOffline : EditorEvent
+    /** Save gelandet, der Server hat ihn mit einem fremden Stand zusammengeführt. */
+    data object Merged : EditorEvent
     data class Conflict(val serverEditorName: String?, val serverUpdatedAt: String?) : EditorEvent
     data class Locked(val lockedByEmail: String?) : EditorEvent
     data class Error(val message: String) : EditorEvent

@@ -145,8 +145,21 @@
       window.addEventListener('resize', applyAnchorPadding);
       window.visualViewport && window.visualViewport.addEventListener('resize', applyAnchorPadding);
 
+      // Text des zuletzt an die native Seite übergebenen Saves. Ein gemergter
+      // Server-Stand (applyServerPage) wird nur eingespielt, solange der Editor
+      // noch genau diesen Text zeigt — sonst gingen seither Getipptes verloren.
+      // Verglichen wird der Klartext: Fokus-Markup (aktiver Absatz) ändert sich
+      // mit dem Caret, ohne dass etwas geschrieben wurde.
+      let lastSentText = null;
+      function editorText() {
+        const el = document.querySelector('.focus-editor__content');
+        return el ? el.textContent : null;
+      }
+
       window.__sw = {
         nextId() { return 'r' + (++seq); },
+        // Aus bridge.savePage: festhalten, welcher Stand gerade gesendet wird.
+        noteSent() { lastSentText = editorText(); },
         // Anker-Anteil der WebView-Höhe (0–1), von der nativen Seite gesetzt.
         setTypewriterAnchor(ratio) {
           const v = Number(ratio);
@@ -248,6 +261,18 @@
         setPage(json) {
           try { window.__swHandle?.setPage(json ? JSON.parse(json) : null); }
           catch (e) {}
+        },
+        // Der Server hat einen Save gegen einen fremden Stand gemergt (Antwort
+        // `merged: true`): den gemergten Stand still einspielen, aber nur, wenn
+        // seit dem Absenden nicht weitergeschrieben wurde. Sonst bleibt der
+        // Editor-Inhalt; der nächste Save mergt auf dem Server erneut.
+        applyServerPage(json) {
+          try {
+            if (!window.__swHandle || !json) return;
+            const text = editorText();
+            if (text === null || text !== lastSentText) return;
+            window.__swHandle.setPage(JSON.parse(json));
+          } catch (e) {}
         },
         setGranularity(g) { try { window.__swHandle?.setGranularity(g); } catch (e) {} },
         async save() { try { await window.__swHandle?.save(); } catch (e) {} },
@@ -414,6 +439,7 @@
         if (!window.SWHost) return Promise.reject(new Error('SWHost fehlt'));
         const id = window.__sw.nextId();
         const p = window.__sw.track(id);
+        window.__sw.noteSent();
         window.SWHost.savePage(id, JSON.stringify(page || {}));
         return p;
       },

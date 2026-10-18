@@ -56,6 +56,12 @@ data class PageDto(
     val last_save_id: String? = null,
     /** PUT-Antwort: `"replay"` (Wiederholung, nichts geschrieben) / `"own"` (eigener Stand überschrieben). */
     val save_match: String? = null,
+    /**
+     * PUT-Antwort: true, wenn der Server einen Push mit veraltetem Stempel gegen seinen
+     * Stand blockweise gemergt und geschrieben hat (nur mit `base_html`). [html] ist
+     * dann der neue Stand, nicht das Gesendete.
+     */
+    val merged: Boolean? = null,
 )
 
 /**
@@ -103,6 +109,13 @@ data class SavePageRequest(
      * mit einer überein, ist ein veralteter Stempel kein Konflikt (`save_match: "own"`).
      */
     val own_save_ids: List<String>? = null,
+    /**
+     * HTML des Server-Stands, auf dem dieser Edit aufbaut (gehört zu
+     * [expected_updated_at]). Ist der Stempel veraltet, mergt der Server damit selbst
+     * blockweise: kollisionsfrei → 200 `merged: true`, echte Kollision → 409 mit
+     * `merge_conflicts`. null = kein Merge, 409 wie ohne.
+     */
+    val base_html: String? = null,
 )
 
 /** 409 PAGE_CONFLICT-Body. */
@@ -112,6 +125,12 @@ data class PageConflictDto(
     val server_updated_at: String? = null,
     val server_editor_email: String? = null,
     val server_editor_name: String? = null,
+    /** Der fremde Stand stammt vom selben Konto (eigenes Zweitgerät). */
+    val server_is_self: Boolean? = null,
+    /** Gerätename des Schreibers, nur bei eigenen Geräten gesetzt. */
+    val server_editor_device: String? = null,
+    /** Nur nach `base_html`: `data-bid` der Blöcke, die beide Seiten verschieden geändert haben. */
+    val merge_conflicts: List<String>? = null,
 )
 
 /** 423 PAGE_LOCKED-Body. */
@@ -243,7 +262,12 @@ data class ResearchItemDto(
 @Serializable
 data class CreateResearchRequest(
     val book_id: Long,
-    val kind: String = "link",
+    /**
+     * Bewusst ohne Default: [ApiJson] schreibt Default-Werte nicht (`encodeDefaults`
+     * aus), ein `kind = "link"` als Default ginge nie raus und der Server legte eine
+     * Notiz an.
+     */
+    val kind: String,
     val title: String? = null,
     val body: String? = null,
     val source: String? = null,
@@ -251,12 +275,21 @@ data class CreateResearchRequest(
     val tags: List<String> = emptyList(),
 )
 
-// ── /config (nur STT-/LanguageTool-relevanter Teil) ─────────────────────────
+// ── /config (nur STT-/LanguageTool-relevanter Teil + Vertragsversion) ──────────
 
 @Serializable
 data class ConfigDto(
     val stt: SttConfigDto? = null,
     val languagetool: LanguageToolConfigDto? = null,
+    /** Vertragsstand des Servers (`contract/version.json`); null = Server älter als api 1. */
+    val clientContract: ClientContractDto? = null,
+)
+
+/** `api` = REST-Revision (Feature-Erkennung per `api >= n`), `editorApi` = Bundle-Major. */
+@Serializable
+data class ClientContractDto(
+    val api: Int = 0,
+    val editorApi: Int = 0,
 )
 
 /**
@@ -288,6 +321,16 @@ data class SttVadDto(
 @Serializable
 data class TranscribeResponse(
     val text: String = "",
+)
+
+// ── Editor-Bundle ───────────────────────────────────────────────────────────
+
+/** `bundle-manifest.json` im Bundle-ZIP (nur die Felder, die die App liest). */
+@Serializable
+data class BundleManifestDto(
+    /** Major des Bundles; null = Bundle älter als der Vertrag (gilt als 1). */
+    val editorApi: Int? = null,
+    val cssFiles: List<String> = emptyList(),
 )
 
 /** Generischer Fehler-Body ({ error_code } oder { error }). */

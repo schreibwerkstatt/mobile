@@ -46,16 +46,17 @@ interface PageDao {
     @Query("UPDATE pages SET html = :html, plain = :plain, dirty = :dirty WHERE id = :id")
     suspend fun updateHtml(id: Long, html: String, plain: String?, dirty: Boolean)
 
-    @Query("UPDATE pages SET html = :html, plain = :plain, updatedAt = :updatedAt, name = :name, dirty = 0 WHERE id = :id")
-    suspend fun applyServerVersion(id: Long, html: String?, plain: String?, updatedAt: String?, name: String?)
+    /** Server-Stand übernehmen. [baseHtml] = Basis des nächsten Pushs, im Normalfall = [html]. */
+    @Query("UPDATE pages SET html = :html, plain = :plain, updatedAt = :updatedAt, name = :name, baseHtml = :baseHtml, dirty = 0 WHERE id = :id")
+    suspend fun applyServerVersion(id: Long, html: String?, plain: String?, updatedAt: String?, name: String?, baseHtml: String?)
 
     /**
      * Nur den bestätigten Server-Stand (`updatedAt`) nachführen, lokalen Inhalt und
      * `dirty` unangetastet lassen — wenn hinter dem gerade bestätigten Write schon ein
      * neuerer lokaler Edit wartet.
      */
-    @Query("UPDATE pages SET updatedAt = :updatedAt WHERE id = :id")
-    suspend fun updateServerStamp(id: Long, updatedAt: String?)
+    @Query("UPDATE pages SET updatedAt = :updatedAt, baseHtml = :baseHtml WHERE id = :id")
+    suspend fun updateServerStamp(id: Long, updatedAt: String?, baseHtml: String?)
 
     /** Serverseitig gelöschte Seiten entfernen — lokal-dirty Seiten bleiben (Pending-Write hat Vorrang). */
     @Query("DELETE FROM pages WHERE id IN (:ids) AND dirty = 0")
@@ -124,12 +125,12 @@ interface PendingWriteDao {
      * Basis eines (neueren) Pending-Writes auf den gerade bestätigten Server-Stand heben.
      * Die geerbten `ownSaveIds` liegen alle vor dieser neuen Basis → erledigt.
      */
-    @Query("UPDATE pending_writes SET baseUpdatedAt = :baseUpdatedAt, ownSaveIds = '[]' WHERE pageId = :pageId AND status = :status")
-    suspend fun rebasePending(pageId: Long, baseUpdatedAt: String?, status: String = PendingWriteEntity.STATUS_PENDING)
+    @Query("UPDATE pending_writes SET baseUpdatedAt = :baseUpdatedAt, baseHtml = :baseHtml, ownSaveIds = '[]' WHERE pageId = :pageId AND status = :status")
+    suspend fun rebasePending(pageId: Long, baseUpdatedAt: String?, baseHtml: String?, status: String = PendingWriteEntity.STATUS_PENDING)
 
     /** Einen Write auf einen als eigen erkannten Server-Stand umbasieren (409-Sicherheitsnetz). */
-    @Query("UPDATE pending_writes SET baseUpdatedAt = :baseUpdatedAt, ownSaveIds = '[]' WHERE localId = :localId")
-    suspend fun rebase(localId: Long, baseUpdatedAt: String?)
+    @Query("UPDATE pending_writes SET baseUpdatedAt = :baseUpdatedAt, baseHtml = :baseHtml, ownSaveIds = '[]' WHERE localId = :localId")
+    suspend fun rebase(localId: Long, baseUpdatedAt: String?, baseHtml: String?)
 
     /** Ersten Sendeversuch vermerken — VOR dem Request, damit eine verlorene Antwort zählt. */
     @Query("UPDATE pending_writes SET sentAt = :sentAt WHERE localId = :localId AND sentAt IS NULL")

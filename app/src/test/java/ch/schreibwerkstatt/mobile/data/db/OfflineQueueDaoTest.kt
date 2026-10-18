@@ -108,12 +108,13 @@ class OfflineQueueDaoTest {
             assertEquals("t0", it.updatedAt) // updateHtml lässt den Server-Stand unberührt
         }
 
-        pages.applyServerVersion(10, "<p>server</p>", "server", "t1", "S2")
+        pages.applyServerVersion(10, "<p>server</p>", "server", "t1", "S2", baseHtml = "<p>server</p>")
         pages.byId(10)!!.let {
             assertFalse(it.dirty)
             assertEquals("<p>server</p>", it.html)
             assertEquals("t1", it.updatedAt)
             assertEquals("S2", it.name)
+            assertEquals("<p>server</p>", it.baseHtml)
         }
     }
 }

@@ -55,7 +55,7 @@ class MigrationTest {
         }
 
         val db = Room.databaseBuilder(ctx, AppDatabase::class.java, dbName)
-            .addMigrations(MIGRATION_3_4).allowMainThreadQueries().build()
+            .addMigrations(MIGRATION_3_4, MIGRATION_4_5).allowMainThreadQueries().build()
         try {
             val a = db.pendingWriteDao().latestForPage(10)!!
             val b = db.pendingWriteDao().latestForPage(20)!!
@@ -74,6 +74,40 @@ class MigrationTest {
             // Nach der Migration normal weiterschreibbar (Default-Werte der neuen Spalten).
             db.pendingWriteDao().markSent(a.localId, 5)
             assertEquals(5L, db.pendingWriteDao().byId(a.localId)!!.sentAt)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test fun `4 to 5 keeps pages and pending writes, base html starts unknown`() = runTest {
+        createFromSchema(4).use { db ->
+            db.execSQL(
+                "INSERT INTO pages (id, bookId, chapterId, name, html, plain, updatedAt, dirty) " +
+                    "VALUES (10, 1, NULL, 'S', '<p>lokal</p>', 'lokal', 't0', 1)"
+            )
+            db.execSQL(
+                "INSERT INTO pending_writes (pageId, bookId, html, deviceId, createdAt, baseUpdatedAt, status, note, saveId, ownSaveIds, sentAt) " +
+                    "VALUES (10, 1, '<p>lokal</p>', 'dev', 1, 't0', 'pending', NULL, '6f1c2b9e-0000-4000-8000-0000000000aa', '[]', 3)"
+            )
+        }
+
+        val db = Room.databaseBuilder(ctx, AppDatabase::class.java, dbName)
+            .addMigrations(MIGRATION_3_4, MIGRATION_4_5).allowMainThreadQueries().build()
+        try {
+            val page = db.pageDao().byId(10)!!
+            assertEquals("<p>lokal</p>", page.html)
+            assertTrue(page.dirty)
+            assertNull(page.baseHtml)
+            val w = db.pendingWriteDao().latestForPage(10)!!
+            assertEquals("t0", w.baseUpdatedAt)
+            assertEquals(3L, w.sentAt)
+            assertNull(w.baseHtml)
+
+            // Neue Spalten sind normal beschreibbar.
+            db.pendingWriteDao().rebase(w.localId, "t1", "<p>basis</p>")
+            assertEquals("<p>basis</p>", db.pendingWriteDao().byId(w.localId)!!.baseHtml)
+            db.pageDao().updateServerStamp(10, "t1", "<p>basis</p>")
+            assertEquals("<p>basis</p>", db.pageDao().byId(10)!!.baseHtml)
         } finally {
             db.close()
         }

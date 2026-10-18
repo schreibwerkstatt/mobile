@@ -175,6 +175,34 @@ class ContentRepositorySaveIdTest {
         assertFalse(db.pageDao().byId(pageId)!!.dirty)
     }
 
+    @Test fun `stale push with base_html is merged by the server and taken over`() = runTest {
+        db.pageDao().upsert(
+            PageEntity(id = pageId, bookId = bookId, name = "S", html = "<p>old</p>", updatedAt = "t0", baseHtml = "<p>old</p>")
+        )
+        fake.mergeOnStale = true
+        fake.foreignWrite(saveId = null) // Stempel jetzt t1
+
+        val res = repo.savePage(pageId, bookId, "<p>A</p>")
+
+        assertTrue("erwartet Saved(merged), war $res", res is SaveResult.Saved && res.merged)
+        val put = fake.puts.last()
+        assertEquals("t0", put.expected_updated_at)
+        assertEquals("<p>old</p>", put.base_html) // über den echten Retrofit-Stack gesendet
+        assertEquals("<p>A</p><p>foreign</p>", fake.html)
+        db.pageDao().byId(pageId)!!.let {
+            assertFalse(it.dirty)
+            assertEquals(fake.html, it.html)
+            assertEquals("<p>A</p>", it.baseHtml)
+        }
+        assertTrue(statuses().isEmpty())
+
+        // Der nächste Save baut auf dem Gesendeten auf und mergt erneut, statt den
+        // fremden Absatz mit passendem Stempel zu überschreiben.
+        repo.savePage(pageId, bookId, "<p>A2</p>")
+        assertEquals("<p>A</p>", fake.puts.last().base_html)
+        assertEquals("<p>A2</p><p>foreign</p>", fake.html)
+    }
+
     @Test fun `generated save ids are lowercase`() = runTest {
         fake.dropNextPutResponse = true
         repo.savePage(pageId, bookId, "<p>A</p>")
@@ -231,6 +259,8 @@ private class ContractServer(private val pageId: Long) : Dispatcher() {
     @Volatile var dropNextPutResponse = false
     @Volatile var lockNextPut = false
     @Volatile var honorOwnSaveIds = true
+    /** Veralteter Stempel + `base_html` → wie der Server mergen (hier: fremder Absatz bleibt). */
+    @Volatile var mergeOnStale = false
     val puts: MutableList<SavePageRequest> = java.util.Collections.synchronizedList(mutableListOf())
 
     fun stamp() = "t$version"
@@ -265,6 +295,10 @@ private class ContractServer(private val pageId: Long) : Dispatcher() {
                     }
                     honorOwnSaveIds && lastSaveId != null && lastSaveId in req.own_save_ids.orEmpty() -> {
                         write(req); lastMatch = "own"; ok(page("own"))
+                    }
+                    mergeOnStale && req.base_html != null -> {
+                        html = req.html + "<p>foreign</p>"; version++; lastSaveId = req.save_id
+                        ok(page().copy(merged = true))
                     }
                     else -> MockResponse().setResponseCode(409).setBody(
                         """{"error_code":"PAGE_CONFLICT","server_updated_at":"${stamp()}"}"""

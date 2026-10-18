@@ -17,7 +17,7 @@ import java.util.UUID
         SyncCursorEntity::class,
         PendingWriteEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -44,7 +44,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // Migration-Objekt via .addMigrations(...) ergänzen (Schemas liegen
                     // exportiert unter app/schemas/ → mit MigrationTestHelper testbar).
                     // Nur ein Downgrade (Dev/Rollback) darf destruktiv neu aufsetzen.
-                    .addMigrations(MIGRATION_3_4)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigrationOnDowngrade()
                     .build().also { instance = it }
             }
@@ -71,5 +71,17 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
                 arrayOf<Any>(UUID.randomUUID().toString(), id),
             )
         }
+    }
+}
+
+/**
+ * 4 → 5: Basis-HTML für den Server-Merge (`base_html`) an Seiten und Pending-Queue.
+ * Bestehende Zeilen bleiben null — ihre Pushes laufen bei veraltetem Stempel wie
+ * bisher in den 409; ab dem nächsten Pull/Laden/bestätigten Push ist die Basis bekannt.
+ */
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE pages ADD COLUMN baseHtml TEXT")
+        db.execSQL("ALTER TABLE pending_writes ADD COLUMN baseHtml TEXT")
     }
 }
