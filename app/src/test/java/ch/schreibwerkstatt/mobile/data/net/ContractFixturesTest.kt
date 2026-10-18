@@ -33,6 +33,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -144,7 +145,9 @@ class ContractFixturesTest {
         assertEquals(true, page.merged)
         assertNotNull(page.html)
         assertTrue("gemergter Stand ≠ Gesendetes", page.html != fx.requestBody?.get("html")?.jsonPrimitive?.content)
-        assertEquals(fx.requestBody?.get("save_id")?.jsonPrimitive?.content, page.last_save_id)
+        // Der gemergte Write trägt keine Save-Kennung: sein Stand enthält fremde Blöcke,
+        // die die App erst mit der Antwort sieht — Wiederholung und Nachfolger mergen erneut.
+        assertNull(page.last_save_id)
     }
 
     @Test fun `push-merge-conflict lists the colliding blocks`() {
@@ -355,7 +358,6 @@ class ContractFixturesTest {
             "job-check-done" to "KI-Jobs (Lektorat) nur im Mac-Client",
             "job-synonym-create" to "KI-Jobs (Synonyme) nur im Mac-Client",
             "job-synonym-done" to "KI-Jobs (Synonyme) nur im Mac-Client",
-            "macclient-i18n" to "UI-Texte des Mac-Clients",
             "page-delete" to "Die App löscht keine Abschnitte",
         )
     }
