@@ -26,6 +26,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -48,6 +49,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -174,6 +177,7 @@ fun HistoryScreen(
             preview = preview,
             restoring = state.restoring,
             onClose = vm::closePreview,
+            onToggleDiff = vm::toggleDiff,
             onRestore = { vm.restore(preview.revision.id, onRestored) },
         )
     }
@@ -219,6 +223,7 @@ private fun RevisionPreviewDialog(
     preview: RevisionPreview,
     restoring: Boolean,
     onClose: () -> Unit,
+    onToggleDiff: () -> Unit,
     onRestore: () -> Unit,
 ) {
     var confirm by remember { mutableStateOf(false) }
@@ -248,16 +253,38 @@ private fun RevisionPreviewDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    // Vergleich mit der Vorgängerin (`prev`, api ≥ 2) — fehlt bei der ältesten.
+                    if (preview.prev != null) {
+                        val desc = stringResource(R.string.history_show_changes_desc)
+                        FilterChip(
+                            selected = preview.showDiff,
+                            onClick = onToggleDiff,
+                            enabled = !preview.loadingHtml,
+                            label = { Text(stringResource(R.string.history_show_changes)) },
+                            modifier = Modifier
+                                .padding(end = 8.dp)
+                                .semantics { contentDescription = desc },
+                        )
+                    }
                     Button(onClick = { confirm = true }, enabled = !restoring && !preview.loadingHtml) {
                         Text(stringResource(R.string.history_restore))
                     }
                 }
                 HorizontalDivider()
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    if (preview.loadingHtml) {
-                        CircularProgressIndicator()
-                    } else {
-                        RevisionWebView(preview.html ?: "", Modifier.fillMaxSize())
+                    when {
+                        preview.loadingHtml -> CircularProgressIndicator()
+                        preview.showDiff && (preview.loadingDiff || preview.diffHtml == null) ->
+                            CircularProgressIndicator()
+                        preview.showDiff && preview.diffEmpty -> Text(
+                            stringResource(R.string.history_no_changes),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(32.dp),
+                        )
+                        preview.showDiff -> RevisionWebView(preview.diffHtml ?: "", Modifier.fillMaxSize())
+                        else -> RevisionWebView(preview.html ?: "", Modifier.fillMaxSize())
                     }
                     if (restoring) CircularProgressIndicator()
                 }
@@ -297,6 +324,10 @@ private fun RevisionWebView(html: String, modifier: Modifier = Modifier) {
                  color: $fg; background: $bg; word-wrap: break-word; }
           img { max-width: 100%; height: auto; }
           hr { border: none; border-top: 1px solid #88888888; margin: 1.5em 0; }
+          ins { text-decoration: none; background: ${if (dark) "#1E5E3A" else "#CDEFD6"}; }
+          del { color: ${if (dark) "#F3A5A5" else "#A12A2A"}; background: ${if (dark) "#5E1E26" else "#F8D3D3"}; }
+          p.added { border-left: 3px solid ${if (dark) "#4CBF7A" else "#2E8B57"}; padding-left: 8px; }
+          p.removed { border-left: 3px solid ${if (dark) "#E07070" else "#B03A3A"}; padding-left: 8px; }
         </style></head><body>$html</body></html>
     """.trimIndent()
     AndroidView(

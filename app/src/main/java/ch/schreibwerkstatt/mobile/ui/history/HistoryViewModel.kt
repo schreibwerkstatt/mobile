@@ -8,17 +8,28 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import ch.schreibwerkstatt.mobile.ServiceLocator
 import ch.schreibwerkstatt.mobile.data.net.dto.RevisionDto
 import ch.schreibwerkstatt.mobile.data.repo.ContentRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Vorschau einer einzelnen Revision (HTML wird nachgeladen). */
 data class RevisionPreview(
     val revision: RevisionDto,
     val loadingHtml: Boolean = true,
     val html: String? = null,
+    /** Unmittelbare Vorgängerin (Meta, aus `prev`), null bei der ältesten Revision. */
+    val prev: RevisionDto? = null,
+    /** true = Änderungen gegenüber [prev] statt des Volltexts zeigen. */
+    val showDiff: Boolean = false,
+    val loadingDiff: Boolean = false,
+    /** Diff-HTML gegen [prev], sobald geladen. */
+    val diffHtml: String? = null,
+    /** true, wenn sich der sichtbare Text gegenüber [prev] nicht geändert hat. */
+    val diffEmpty: Boolean = false,
 )
 
 data class HistoryUiState(
@@ -58,11 +69,17 @@ class HistoryViewModel(
         _state.update { it.copy(preview = RevisionPreview(rev)) }
         viewModelScope.launch {
             repo.pageRevision(pageId, rev.id)
-                .onSuccess { full ->
+                .onSuccess { (full, prev) ->
                     _state.update { s ->
                         // Nur übernehmen, wenn die Vorschau noch dieselbe Revision zeigt.
                         if (s.preview?.revision?.id == rev.id) {
-                            s.copy(preview = s.preview.copy(loadingHtml = false, html = full.body_html ?: ""))
+                            s.copy(
+                                preview = s.preview.copy(
+                                    loadingHtml = false,
+                                    html = full.body_html ?: "",
+                                    prev = prev,
+                                )
+                            )
                         } else s
                     }
                 }
@@ -70,6 +87,52 @@ class HistoryViewModel(
                     _state.update { s ->
                         if (s.preview?.revision?.id == rev.id) {
                             s.copy(preview = null, message = e.message)
+                        } else s
+                    }
+                }
+        }
+    }
+
+    /**
+     * Zwischen Volltext und «Änderungen gegenüber der Vorgängerin» umschalten. Der Body
+     * der Vorgängerin wird beim ersten Mal nachgeladen und der Diff einmal gerechnet.
+     */
+    fun toggleDiff() {
+        val p = _state.value.preview ?: return
+        val prev = p.prev ?: return
+        val html = p.html ?: return
+        val show = !p.showDiff
+        _state.update { s -> s.copy(preview = s.preview?.copy(showDiff = show)) }
+        if (!show || p.diffHtml != null || p.loadingDiff) return
+        val revId = p.revision.id
+        _state.update { s -> s.copy(preview = s.preview?.copy(loadingDiff = true)) }
+        viewModelScope.launch {
+            repo.pageRevision(pageId, prev.id)
+                .mapCatching { (prevFull, _) ->
+                    withContext(Dispatchers.Default) {
+                        RevisionDiff.diff(prevFull.body_html ?: "", html)
+                    }
+                }
+                .onSuccess { blocks ->
+                    _state.update { s ->
+                        if (s.preview?.revision?.id == revId) {
+                            s.copy(
+                                preview = s.preview.copy(
+                                    loadingDiff = false,
+                                    diffHtml = RevisionDiff.toHtml(blocks),
+                                    diffEmpty = RevisionDiff.unchanged(blocks),
+                                )
+                            )
+                        } else s
+                    }
+                }
+                .onFailure { e ->
+                    _state.update { s ->
+                        if (s.preview?.revision?.id == revId) {
+                            s.copy(
+                                preview = s.preview.copy(loadingDiff = false, showDiff = false),
+                                message = e.message,
+                            )
                         } else s
                     }
                 }

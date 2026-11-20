@@ -324,7 +324,10 @@
             const h = window.__swHandle;
             if (!h || !json) return;
             const page = JSON.parse(json);
-            if (typeof h.replaceContent === 'function') { h.replaceContent(page.html); return; }
+            if (typeof h.replaceContent === 'function') {
+              if (h.replaceContent(page.html) === true) refreshSpellcheck();
+              return;
+            }
             const text = editorText();
             if (text === null || text !== lastSentText) return;
             setPageKeepingCaret(page);
@@ -341,6 +344,7 @@
             const h = window.__swHandle;
             if (h && json && typeof h.replaceContent === 'function') {
               applied = h.replaceContent(JSON.parse(json).html) === true;
+              if (applied) refreshSpellcheck();
             }
           } catch (e) {}
           try { window.SWHost.pulledApplied(String(token), applied); } catch (e) {}
@@ -353,7 +357,10 @@
             const h = window.__swHandle;
             if (!h || !json) return;
             const page = JSON.parse(json);
-            if (typeof h.replaceContent === 'function' && h.replaceContent(page.html)) return;
+            if (typeof h.replaceContent === 'function' && h.replaceContent(page.html)) {
+              refreshSpellcheck();
+              return;
+            }
             setPageKeepingCaret(page);
           } catch (e) {}
         },
@@ -416,6 +423,16 @@
         })().then((ctl) => { spell.ctl = ctl; spell.loading = null; return ctl; })
              .catch(() => { spell.loading = null; return null; });
         return spell.loading;
+      }
+
+      // Nach `handle.replaceContent` neu prüfen: der Tausch feuert kein `input`,
+      // die Markierungen gälten sonst bis zum nächsten Tippen dem alten Stand.
+      // `refresh()` ist seit api 5 zugesagt (SpellcheckController); Feature-Check
+      // für ältere Bundles.
+      function refreshSpellcheck() {
+        try {
+          if (spell.on && spell.ctl && typeof spell.ctl.refresh === 'function') spell.ctl.refresh();
+        } catch (e) {}
       }
 
       async function setSpellcheck(on, debounceMs) {

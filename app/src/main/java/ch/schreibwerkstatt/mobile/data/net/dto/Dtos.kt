@@ -178,6 +178,8 @@ data class RevisionListResponse(
 @Serializable
 data class RevisionDetailResponse(
     val revision: RevisionDto? = null,
+    /** Meta der unmittelbaren Vorgängerin (api ≥ 2, ohne `body_html`), null bei der ältesten. */
+    val prev: RevisionDto? = null,
 )
 
 /** Antwort auf das Zurücksetzen (`…/restore`). */
@@ -325,6 +327,11 @@ data class SttVadDto(
 @Serializable
 data class TranscribeResponse(
     val text: String = "",
+    /**
+     * Whisper-Konfidenz (api ≥ 5): true = unsicher, ob Sprache vorlag (Geisterphrase
+     * aus Stille), false = sicher erkannte Sprache, null = Backend ohne Konfidenz.
+     */
+    val uncertain: Boolean? = null,
 )
 
 // ── Editor-Bundle ───────────────────────────────────────────────────────────

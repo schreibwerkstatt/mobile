@@ -153,6 +153,9 @@
     <string name="history_source_sync">Synchronisation</string>
     <string name="history_source_unknown">Unknown</string>
     <string name="history_pinned">Pinned</string>
+    <string name="history_show_changes">Changes</string>
+    <string name="history_show_changes_desc">Show changes compared to the previous version</string>
+    <string name="history_no_changes">No text changes compared to the previous version (formatting or similar only).</string>
 
     <!-- Diary / calendar -->
     <string name="calendar_show">Show calendar</string>

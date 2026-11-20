@@ -187,6 +187,14 @@ class ContractFixturesTest {
         assertNotNull(cfg.stt)
     }
 
+    @Test fun `revision detail carries its predecessor for the diff`() {
+        val r = decode("revision", RevisionDetailResponse.serializer())
+        assertNotNull("revision ohne body_html", r.revision?.body_html)
+        val prev = r.prev
+        assertNotNull("revision ohne prev (api ≥ 2) — Vergleich mit der Vorgängerin bricht", prev)
+        assertTrue(prev!!.id != r.revision!!.id)
+    }
+
     @Test fun `bundle manifest carries a supported editorApi`() {
         val m = decode("editor-bundle", BundleManifestDto.serializer())
         val major = m.editorApi

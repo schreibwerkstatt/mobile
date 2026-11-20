@@ -68,6 +68,18 @@ class EditorHostSpellcheckWiringTest {
         )
     }
 
+    @Test fun `spellcheck re-checks after replaceContent`() {
+        val host = host()
+        assertTrue(
+            "refreshSpellcheck muss controller.refresh() per Feature-Check aufrufen",
+            host.contains("typeof spell.ctl.refresh === 'function'"),
+        )
+        // replaceContent feuert kein `input`: jeder der drei Einspiel-Pfade
+        // (merged-Antwort, Sync-Pull, «Server-Stand laden») muss selbst neu prüfen.
+        val calls = Regex("""refreshSpellcheck\(\)""").findAll(host).count()
+        assertTrue("refreshSpellcheck() in allen drei replaceContent-Pfaden (gefunden: $calls)", calls >= 3)
+    }
+
     /** Liest host.html relativ zum Modul-Verzeichnis (CWD der Unit-Tests). */
     private fun host(): String {
         val rel = "src/main/assets/editor-host/host.html"

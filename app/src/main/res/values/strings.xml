@@ -155,6 +155,9 @@
     <string name="history_source_sync">Synchronisierung</string>
     <string name="history_source_unknown">Unbekannt</string>
     <string name="history_pinned">Angeheftet</string>
+    <string name="history_show_changes">Änderungen</string>
+    <string name="history_show_changes_desc">Änderungen gegenüber der vorherigen Version zeigen</string>
+    <string name="history_no_changes">Keine Textänderung gegenüber der vorherigen Version (nur Formatierung o.Ä.).</string>
 
     <!-- Tagebuch / Kalender -->
     <string name="calendar_show">Kalender anzeigen</string>

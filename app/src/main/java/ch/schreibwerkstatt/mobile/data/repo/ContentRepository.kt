@@ -588,10 +588,14 @@ class ContentRepository(
         net.content(baseUrl()).revisions(pageId).revisions
     }
 
-    /** Eine einzelne Revision inkl. vollem `body_html` (für die Vorschau). */
-    suspend fun pageRevision(pageId: Long, revId: Long): Result<RevisionDto> = runCatching {
-        net.content(baseUrl()).revision(pageId, revId).revision
-            ?: error("Revision $revId nicht gefunden")
+    /**
+     * Eine einzelne Revision inkl. vollem `body_html` (für die Vorschau), dazu die Meta
+     * ihrer unmittelbaren Vorgängerin (`prev`, ohne Body; null bei der ältesten).
+     */
+    suspend fun pageRevision(pageId: Long, revId: Long): Result<Pair<RevisionDto, RevisionDto?>> = runCatching {
+        val resp = net.content(baseUrl()).revision(pageId, revId)
+        val rev = resp.revision ?: error("Revision $revId nicht gefunden")
+        rev to resp.prev
     }
 
     /**

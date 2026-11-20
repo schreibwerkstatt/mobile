@@ -113,7 +113,10 @@ class DictationController(
                 val body = bytes.toRequestBody(mime.toMediaType())
                 val resp = net.stt(baseUrl).transcribe(bookId, pageId, body)
                 if (resp.isSuccessful) {
-                    resp.body()?.text.orEmpty()
+                    val result = resp.body()
+                    val text = result?.text.orEmpty()
+                    // Whisper-Geisterphrase aus einem stillen Segment → verwerfen.
+                    if (isLikelyHallucination(text, result?.uncertain)) "" else text
                 } else {
                     val err = resp.errorBody()?.string()?.takeIf { it.isNotBlank() }?.let {
                         runCatching { net.jsonParser.decodeFromString(ApiErrorDto.serializer(), it) }.getOrNull()
@@ -137,13 +140,64 @@ class DictationController(
         @VisibleForTesting
         fun segmentTooLarge(sizeBytes: Int): Boolean = sizeBytes > MAX_SEGMENT_BYTES
 
+        /**
+         * Bekannte Whisper-Halluzinationen bei stillen/unverständlichen Segmenten
+         * (gleiche Liste wie der Web-Client, `public/js/editor/notebook/stt/compute.js`).
+         * Trifft nur, wenn das ganze normalisierte Segment der Phrase gleicht.
+         */
+        private val HALLUCINATION_EXACT = setOf(
+            "vielen dank",
+            "vielen dank fürs zuschauen",
+            "vielen dank fürs zuhören",
+            "vielen dank für ihre aufmerksamkeit",
+            "danke fürs zuschauen",
+            "bis zum nächsten mal",
+            "tschüss",
+            "das war's",
+            "untertitel",
+            "untertitelung",
+            "thank you",
+            "thanks for watching",
+        )
+        private const val BROADCASTERS = "(zdf|ard|wdr|swr|ndr|orf|srf|mdr|br|funk)"
+
+        /** Eindeutige Untertitel-/Copyright-Marker, die in Prosa nicht vorkommen. */
+        private val HALLUCINATION_PATTERNS = listOf(
+            Regex("amara\\.org"),
+            Regex("^untertitel(ung)?\\b.*(\\b$BROADCASTERS\\b|\\b\\d{4}\\b)"),
+            Regex("\\bim auftrag (des|der|von)\\b.*\\b$BROADCASTERS\\b"),
+            Regex("^$BROADCASTERS(,? \\d{4})?$"),
+            Regex("^(©|copyright\\b.*\\b\\d{4}\\b)"),
+        )
+        private val WHITESPACE = Regex("\\s+")
+        private val TRAILING_PUNCT = Regex("[.!?…»«„“”\"'’\\s]+$")
+
+        /**
+         * true, wenn [text] eine bekannte Whisper-Geisterphrase ist. [uncertain] ist die
+         * Konfidenz des Servers (api ≥ 5): `false` = sicher gesprochen, dann ist auch ein
+         * «Tschüss.» eine echte Dialogzeile und wird nie gefiltert; `null` = Backend
+         * ohne Konfidenz → nur die Phrasenliste entscheidet.
+         */
+        @VisibleForTesting
+        fun isLikelyHallucination(text: String, uncertain: Boolean?): Boolean {
+            if (uncertain == false) return false
+            val norm = text.replace(WHITESPACE, " ")
+                .replace(TRAILING_PUNCT, "")
+                .trim()
+                .lowercase()
+            if (norm.isEmpty()) return false
+            if (norm in HALLUCINATION_EXACT) return true
+            return HALLUCINATION_PATTERNS.any { it.containsMatchIn(norm) }
+        }
+
         @VisibleForTesting
         fun sttErrorMessage(httpCode: Int, code: String?): String = when (code ?: httpCode.toString()) {
             "stt_disabled", "404" -> "Diktat ist auf dem Server deaktiviert."
             "stt_audio_too_large", "413" -> "Audiosegment zu gross (max 5 MB)."
             "stt_unsupported_audio", "415" -> "Audioformat nicht unterstützt."
             "stt_timeout", "408" -> "Transkription hat zu lange gedauert."
-            "stt_upstream", "502" -> "STT-Dienst nicht erreichbar."
+            "stt_upstream", "STT_UPSTREAM", "502" -> "STT-Dienst nicht erreichbar."
+            "NO_BOOK_ACCESS", "403" -> "Kein Zugriff auf dieses Buch."
             else -> "Transkription fehlgeschlagen (HTTP $httpCode)."
         }
     }
