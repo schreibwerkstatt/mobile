@@ -55,7 +55,7 @@ class MigrationTest {
         }
 
         val db = Room.databaseBuilder(ctx, AppDatabase::class.java, dbName)
-            .addMigrations(MIGRATION_3_4, MIGRATION_4_5).allowMainThreadQueries().build()
+            .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).allowMainThreadQueries().build()
         try {
             val a = db.pendingWriteDao().latestForPage(10)!!
             val b = db.pendingWriteDao().latestForPage(20)!!
@@ -92,7 +92,7 @@ class MigrationTest {
         }
 
         val db = Room.databaseBuilder(ctx, AppDatabase::class.java, dbName)
-            .addMigrations(MIGRATION_3_4, MIGRATION_4_5).allowMainThreadQueries().build()
+            .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).allowMainThreadQueries().build()
         try {
             val page = db.pageDao().byId(10)!!
             assertEquals("<p>lokal</p>", page.html)
@@ -108,6 +108,32 @@ class MigrationTest {
             assertEquals("<p>basis</p>", db.pendingWriteDao().byId(w.localId)!!.baseHtml)
             db.pageDao().updateServerStamp(10, "t1", "<p>basis</p>")
             assertEquals("<p>basis</p>", db.pageDao().byId(10)!!.baseHtml)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test fun `5 to 6 keeps pages and pending writes, adds an empty tree cache`() = runTest {
+        createFromSchema(5).use { db ->
+            db.execSQL(
+                "INSERT INTO pages (id, bookId, chapterId, name, html, plain, updatedAt, dirty, baseHtml) " +
+                    "VALUES (10, 1, NULL, 'S', '<p>lokal</p>', 'lokal', 't0', 1, '<p>basis</p>')"
+            )
+            db.execSQL(
+                "INSERT INTO pending_writes (pageId, bookId, html, deviceId, createdAt, baseUpdatedAt, status, note, saveId, ownSaveIds, sentAt, baseHtml) " +
+                    "VALUES (10, 1, '<p>lokal</p>', 'dev', 1, 't0', 'pending', NULL, '6f1c2b9e-0000-4000-8000-0000000000aa', '[]', NULL, '<p>basis</p>')"
+            )
+        }
+
+        val db = Room.databaseBuilder(ctx, AppDatabase::class.java, dbName)
+            .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).allowMainThreadQueries().build()
+        try {
+            assertEquals("<p>basis</p>", db.pageDao().byId(10)!!.baseHtml)
+            assertEquals("<p>basis</p>", db.pendingWriteDao().latestForPage(10)!!.baseHtml)
+            assertNull(db.treeCacheDao().byBook(1))
+
+            db.treeCacheDao().upsert(TreeCacheEntity(bookId = 1, json = "{}", fetchedAt = 5))
+            assertEquals("{}", db.treeCacheDao().byBook(1)!!.json)
         } finally {
             db.close()
         }

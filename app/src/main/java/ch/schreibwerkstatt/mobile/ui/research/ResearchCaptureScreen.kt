@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -11,7 +12,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -45,6 +48,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ch.schreibwerkstatt.mobile.R
 import ch.schreibwerkstatt.mobile.locator
+import ch.schreibwerkstatt.mobile.ui.components.message
+import android.widget.Toast
 
 /**
  * Formular „Recherche festhalten". Erreichbar über den Share-Empfang (mit
@@ -63,6 +68,8 @@ fun ResearchCaptureScreen(
     val books by vm.books.collectAsStateWithLifecycle()
     val saving by vm.saving.collectAsStateWithLifecycle()
     val result by vm.result.collectAsStateWithLifecycle()
+    val booksFailed by vm.booksFailed.collectAsStateWithLifecycle()
+    val booksLoading by vm.booksLoading.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -71,11 +78,20 @@ fun ResearchCaptureScreen(
     var note by rememberSaveable { mutableStateOf(shared?.note.orEmpty()) }
     var selectedBookId by rememberSaveable { mutableStateOf<Long?>(preselectBookId) }
     var menuExpanded by remember { mutableStateOf(false) }
+    var confirmDiscard by remember { mutableStateOf(false) }
 
-    // System-Zurück wie der Pfeil oben behandeln: sonst bleibt der geteilte Inhalt im
-    // Activity-State hängen (erneutes Teilen desselben Links wirkte nicht, nach dem
-    // Neu-Koppeln öffnete sich das Formular ungefragt wieder).
-    BackHandler(onBack = onDone)
+    // Zurück (System und Pfeil oben): während des Speicherns blockiert (das Ergebnis
+    // schliesst den Screen ohnehin), mit Eingaben erst nach «Verwerfen?». Beendet wird
+    // immer über onDone — sonst bleibt der geteilte Inhalt im Activity-State hängen
+    // (erneutes Teilen desselben Links wirkte nicht, nach dem Neu-Koppeln öffnete sich
+    // das Formular ungefragt wieder).
+    val hasInput = url.isNotBlank() || title.isNotBlank() || note.isNotBlank()
+    val onBackRequest: () -> Unit = {
+        if (!saving) {
+            if (hasInput) confirmDiscard = true else onDone()
+        }
+    }
+    BackHandler(onBack = onBackRequest)
 
     // Sinnvolle Vorauswahl, sobald die Bücher geladen sind: explizit gewünschtes
     // Buch, sonst das einzige vorhandene. Bei mehreren bleibt die Auswahl offen.
@@ -92,10 +108,12 @@ fun ResearchCaptureScreen(
         when (val r = result) {
             CaptureResult.Saved -> {
                 vm.consumeResult()
+                // Toast statt Snackbar: der Screen schliesst sich sofort.
+                Toast.makeText(context, savedMsg, Toast.LENGTH_SHORT).show()
                 onDone()
             }
             is CaptureResult.Error -> {
-                snackbarHostState.showSnackbar(errorTemplate.format(r.message))
+                snackbarHostState.showSnackbar(errorTemplate.format(r.error.message(context.resources)))
                 vm.consumeResult()
             }
             null -> {}
@@ -112,7 +130,7 @@ fun ResearchCaptureScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.research_capture_title)) },
                 navigationIcon = {
-                    IconButton(onClick = onDone) {
+                    IconButton(onClick = onBackRequest, enabled = !saving) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
                     }
                 },
@@ -139,6 +157,8 @@ fun ResearchCaptureScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(16.dp)
+                // Edge-to-edge: Tastatur-Inset vor dem Scroll, sonst verdeckt sie das Notizfeld.
+                .imePadding()
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -173,6 +193,19 @@ fun ResearchCaptureScreen(
                 }
             }
 
+            // Ohne Bücher im Cache (Kaltstart offline / Abruf gescheitert) ist keine Auswahl
+            // möglich — Hinweis mit Retry statt eines dauerhaft gesperrten Speichern-Knopfs.
+            if (books.isEmpty() && (booksFailed || !booksLoading)) {
+                Text(
+                    stringResource(R.string.research_books_unavailable),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                OutlinedButton(onClick = vm::refreshBooks, enabled = !booksLoading) {
+                    Text(stringResource(R.string.action_retry))
+                }
+            }
+
             OutlinedTextField(
                 value = url,
                 onValueChange = { url = it },
@@ -201,5 +234,20 @@ fun ResearchCaptureScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text(stringResource(R.string.research_discard_title)) },
+            confirmButton = {
+                TextButton(onClick = { confirmDiscard = false; onDone() }) {
+                    Text(stringResource(R.string.research_discard_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDiscard = false }) { Text(stringResource(R.string.action_cancel)) }
+            },
+        )
     }
 }

@@ -112,7 +112,7 @@ class UpdateManager(
                 // hat dismiss() schon auf Idle gesetzt.
                 throw e
             } catch (e: Exception) {
-                _state.value = UpdateState.Error(e.message ?: "Download fehlgeschlagen")
+                _state.value = UpdateState.Error(e.message ?: appContext.getString(R.string.update_error_download))
             }
         }
     }

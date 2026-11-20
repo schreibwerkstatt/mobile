@@ -1,0 +1,11 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Nacht-Variante des Window-Themes: Navy-Hintergrund (= Compose-Dunkel-
+         background in Theme.kt), damit der Kaltstart im Dark Mode nicht weiss
+         aufblitzt. Folgt dem System-Nachtmodus; die App-Einstellung «Hell/Dunkel»
+         greift erst, sobald Compose läuft. -->
+    <style name="Theme.Schreibwerkstatt" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+        <item name="android:windowBackground">@color/brand_window_bg</item>
+    </style>
+</resources>

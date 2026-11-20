@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -42,6 +43,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imeAnimationTarget
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -67,6 +69,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -77,8 +81,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -93,14 +100,17 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -120,6 +130,8 @@ import ch.schreibwerkstatt.mobile.editor.EditorBridge
 import ch.schreibwerkstatt.mobile.locator
 import ch.schreibwerkstatt.mobile.ui.components.SkeletonParagraphs
 import ch.schreibwerkstatt.mobile.ui.components.SyncStatusBar
+import ch.schreibwerkstatt.mobile.ui.components.formatServerTime
+import ch.schreibwerkstatt.mobile.ui.components.message
 import ch.schreibwerkstatt.mobile.ui.components.pageFlipGestures
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -147,6 +159,7 @@ fun EditorScreen(
     val pendingCount by coordinator.pendingCount.collectAsStateWithLifecycle()
     val snackbarHost = remember { SnackbarHostState() }
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
+    val appScope = context.locator.applicationScope
 
     // evaluateJavascript-Helfer (UI-Thread).
     val evalJs: (String) -> Unit = { js -> webViewRef.value?.post { webViewRef.value?.evaluateJavascript(js, null) } }
@@ -172,8 +185,17 @@ fun EditorScreen(
     val activity = context as? Activity
     // Dialoge der Mikrofon-Berechtigung (Diktat): Begründung vor erneuter Anfrage,
     // bzw. Hinweis auf die App-Einstellungen bei dauerhafter Ablehnung.
-    var showMicRationale by remember { mutableStateOf(false) }
-    var showMicBlocked by remember { mutableStateOf(false) }
+    var showMicRationale by rememberSaveable { mutableStateOf(false) }
+    var showMicBlocked by rememberSaveable { mutableStateOf(false) }
+    // Zweite Bestätigung vor „Server übernehmen" (verwirft die lokale Fassung).
+    var showDiscardConfirm by rememberSaveable { mutableStateOf(false) }
+
+    // Generation der WebView: hochgezählt, wenn sie neu aufgebaut werden muss
+    // (Renderer-Absturz, „Erneut versuchen" nach Boot-Fehler). Teil des `key()`
+    // um WebView + Bridge (siehe unten).
+    var webViewGeneration by remember { mutableIntStateOf(0) }
+    // App-Sprache für `<html lang>` in host.html (über die Bridge).
+    val uiLanguage = LocalConfiguration.current.locales[0].toLanguageTag()
 
     val startDictation = { vm.toggleDictation() }
 
@@ -186,8 +208,7 @@ fun EditorScreen(
     }
 
     // Presence-/Schreibzeit-Heartbeat nur, solange diese Seite sichtbar ist: der
-    // LifecycleOwner ist hier der Backstack-Eintrag — verdeckt (Wisch-Navigation,
-    // Verlauf) oder im Hintergrund fällt er unter RESUMED und der Block wird gecancelt.
+    // LifecycleOwner ist hier der Backstack-Eintrag — verdeckt (Verlauf) oder im Hintergrund fällt er unter RESUMED und der Block wird gecancelt.
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwner, vm) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) { vm.runWhileVisible() }
@@ -249,7 +270,7 @@ fun EditorScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(pageTitle) },
+                title = { Text(pageTitle, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = {
                         // Speichern übernimmt zentral der onDispose-Barrier (siehe unten),
@@ -296,6 +317,13 @@ fun EditorScreen(
                 },
             )
         },
+        // Tastatur-Inset in die Scaffold-Insets: Scaffold setzt FAB und Snackbar über
+        // `contentWindowInsets.bottom` — ohne IME lägen beide edge-to-edge hinter der
+        // Tastatur. `imeAnimationTarget` (nicht `ime`) aus demselben Grund wie beim
+        // Inhalt unten: ein Sprung statt einer Animation über ~20 Frames. Der Inhalt
+        // bekommt den IME-Anteil damit schon über `padding`; das
+        // `windowInsetsPadding(imeAnimationTarget)` unten ist dann ein No-op-Schutz.
+        contentWindowInsets = ScaffoldDefaults.contentWindowInsets.union(WindowInsets.imeAnimationTarget),
         snackbarHost = { SnackbarHost(snackbarHost) },
         floatingActionButton = {
             if (state.sttEnabled) {
@@ -308,7 +336,13 @@ fun EditorScreen(
                     requestDictation()
                 }) {
                     when {
-                        state.transcribing -> CircularProgressIndicator(strokeWidth = 2.dp)
+                        state.transcribing -> {
+                            val transcribingLabel = stringResource(R.string.editor_transcribing)
+                            CircularProgressIndicator(
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.semantics { contentDescription = transcribingLabel },
+                            )
+                        }
                         state.recording -> Icon(Icons.Filled.Stop, contentDescription = stringResource(R.string.editor_stop))
                         else -> Icon(Icons.Filled.Mic, contentDescription = stringResource(R.string.editor_dictate))
                     }
@@ -396,18 +430,80 @@ fun EditorScreen(
                     }
                 }
                 is BundleState.Ready -> {
-                    val bridge = remember(b.dir, darkTheme, spellcheckStrings) {
-                        vm.newBridge(evalJs, darkTheme, spellcheckStrings)
+                    // WebView und Bridge hängen an denselben Schlüsseln: Die Bridge
+                    // wird nur in der AndroidView-`factory` injiziert — eine neue
+                    // Bridge ohne neue WebView bliebe wirkungslos (alter Theme-/i18n-
+                    // Stand). Ändert sich ein Schlüssel, räumt `onClose` die alte
+                    // WebView mit Schliess-Save ab und es entsteht eine neue.
+                    key(b.dir, darkTheme, spellcheckStrings, uiLanguage, webViewGeneration) {
+                        val bridge = remember {
+                            vm.newBridge(evalJs, darkTheme, spellcheckStrings, uiLanguage)
+                        }
+                        EditorWebView(
+                            bundleDir = b.dir,
+                            bridge = bridge,
+                            darkTheme = darkTheme,
+                            onWebViewCreated = {
+                                webViewRef.value = it
+                                vm.onWebViewCreated()
+                            },
+                            onRendererGone = { dead ->
+                                // Tote WebView sofort aus dem JS-Pfad nehmen, dann neu aufbauen.
+                                if (webViewRef.value === dead) webViewRef.value = null
+                                vm.onRendererGone()
+                                webViewGeneration++
+                            },
+                            onClose = { wv ->
+                                // Einziger, verlässlicher Schliess-Save (Back, Verlauf,
+                                // Wisch-Navigation, Neuaufbau): finalen Save anstossen und
+                                // kurz warten, bis der Editor ihn an die Bridge übergeben
+                                // hat — erst DANN die WebView abräumen, damit die
+                                // (asynchrone) JS-Save-Kette die Übergabe sicher erreicht.
+                                // Persist/Flush läuft im applicationScope weiter und
+                                // überlebt das destroy(); der ganze Ablauf hängt am
+                                // applicationScope, nicht am (ggf. gecancelten) viewModelScope.
+                                if (webViewRef.value === wv) webViewRef.value = null
+                                appScope.launch(Dispatchers.Main) {
+                                    vm.saveBeforeClose { js -> wv.evaluateJavascript(js, null) }
+                                    wv.destroy()
+                                }
+                            },
+                        )
                     }
-                    EditorWebView(
-                        bundleDir = b.dir,
-                        bridge = bridge,
-                        darkTheme = darkTheme,
-                        onWebViewCreated = {
-                            webViewRef.value = it
-                            vm.onWebViewCreated()
-                        },
-                    )
+
+                    // Bis host.html `onReady` meldet: Skeleton über der (darunter
+                    // bootenden) WebView, danach ausgeblendet.
+                    EditorLoadingOverlay(visible = !state.editorReady && !state.bootFailed)
+
+                    // Boot in host.html gescheitert: nativer, lokalisierter Fehler
+                    // über der WebView; „Erneut versuchen" baut sie neu auf.
+                    if (state.bootFailed) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.background)
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Text(
+                                stringResource(R.string.editor_boot_failed),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            state.bootErrorDetail?.let { detail ->
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            Button(onClick = { webViewGeneration++ }) {
+                                Text(stringResource(R.string.action_retry))
+                            }
+                        }
+                    }
                 }
             }
 
@@ -433,48 +529,96 @@ fun EditorScreen(
     // welche bestehen bleibt (Server übernehmen ODER eigene Fassung durchsetzen).
     state.conflict?.let { c ->
         val editorName = c.serverEditorName ?: stringResource(R.string.editor_conflict_someone)
-        val updatedAt = c.serverUpdatedAt ?: stringResource(R.string.editor_conflict_unknown_time)
+        val updatedAt = c.serverUpdatedAt?.let(::formatServerTime)
+            ?: stringResource(R.string.editor_conflict_unknown_time)
         val emptyLabel = stringResource(R.string.editor_conflict_empty)
+        val busy = state.resolving
+        val localText = state.conflictLocalText
+        val serverText = state.conflictServerText
         AlertDialog(
+            // Kein Schliessen per Antippen daneben: der Konflikt verlangt eine bewusste
+            // Wahl. Zurück-Taste schliesst weiterhin (Topbar-Hinweis öffnet erneut).
             onDismissRequest = vm::dismissConflict,
+            properties = DialogProperties(dismissOnClickOutside = false),
             title = { Text(stringResource(R.string.editor_conflict_title)) },
             text = {
                 Column {
                     Text(stringResource(R.string.editor_conflict_message, editorName, updatedAt))
                     Spacer(Modifier.height(16.dp))
-                    if (state.conflictLoading && state.conflictServerText == null) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                    when {
+                        state.conflictLoading -> Row(verticalAlignment = Alignment.CenterVertically) {
                             CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(12.dp))
                             Text(stringResource(R.string.editor_conflict_loading))
                         }
-                    } else {
-                        ConflictVersionBlock(
-                            label = stringResource(R.string.editor_conflict_your_version),
-                            text = state.conflictLocalText?.ifBlank { emptyLabel } ?: emptyLabel,
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        ConflictVersionBlock(
-                            label = stringResource(R.string.editor_conflict_server_version),
-                            text = state.conflictServerText?.ifBlank { emptyLabel } ?: emptyLabel,
-                        )
+                        // Vorschau nicht ladbar (z.B. offline): kein irreführendes
+                        // «(leer)» für beide Fassungen, sondern Hinweis + erneuter Versuch.
+                        state.conflictPreviewFailed || localText == null || serverText == null -> Column {
+                            Text(
+                                stringResource(R.string.editor_conflict_preview_failed),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            TextButton(onClick = vm::retryConflictPreview, enabled = !busy) {
+                                Text(stringResource(R.string.editor_conflict_preview_retry))
+                            }
+                        }
+                        else -> {
+                            ConflictVersionBlock(
+                                label = stringResource(R.string.editor_conflict_your_version),
+                                text = localText.ifBlank { emptyLabel },
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            ConflictVersionBlock(
+                                label = stringResource(R.string.editor_conflict_server_version),
+                                text = serverText.ifBlank { emptyLabel },
+                            )
+                        }
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    vm.resolveConflictWithServer { html ->
-                        // Server-Stand still in den Editor spielen (kein erneuter Save).
-                        val payload = JSONObject().put("id", pageId).put("html", html).toString()
-                        evalJs("window.__sw && window.__sw.loadServerPage(${jsString(payload)});")
-                    }
-                }) { Text(stringResource(R.string.editor_conflict_load_server)) }
+                // Destruktiv (verwirft die lokale Fassung) → Fehlerfarbe + Rückfrage.
+                TextButton(
+                    onClick = { showDiscardConfirm = true },
+                    enabled = !busy,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text(stringResource(R.string.editor_conflict_load_server)) }
             },
             dismissButton = {
                 // Eigene Fassung durchsetzen (überschreibt den Server). Der Editor zeigt
                 // sie bereits an, daher kein setPage nötig.
-                TextButton(onClick = vm::resolveConflictWithLocal) {
+                TextButton(onClick = vm::resolveConflictWithLocal, enabled = !busy) {
                     Text(stringResource(R.string.editor_conflict_keep_local))
+                }
+            },
+        )
+    }
+
+    // Rückfrage vor „Server übernehmen": die lokale Fassung geht unwiderruflich verloren.
+    if (showDiscardConfirm && state.conflict != null) {
+        AlertDialog(
+            onDismissRequest = { showDiscardConfirm = false },
+            properties = DialogProperties(dismissOnClickOutside = false),
+            title = { Text(stringResource(R.string.editor_conflict_discard_title)) },
+            text = { Text(stringResource(R.string.editor_conflict_discard_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDiscardConfirm = false
+                        vm.resolveConflictWithServer { html ->
+                            // Server-Stand still in den Editor spielen (kein erneuter Save).
+                            val payload = JSONObject().put("id", pageId).put("html", html).toString()
+                            evalJs("window.__sw && window.__sw.loadServerPage(${jsString(payload)});")
+                        }
+                    },
+                    enabled = !state.resolving,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text(stringResource(R.string.editor_conflict_discard_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiscardConfirm = false }) {
+                    Text(stringResource(R.string.action_cancel))
                 }
             },
         )
@@ -521,26 +665,14 @@ fun EditorScreen(
         )
     }
 
-    // Beim Verlassen (Back, History, Wisch-Navigation): einziger, verlässlicher
-    // Schliess-Save. Wir stossen den finalen Save an und warten kurz, bis der Editor
-    // ihn an die Bridge übergeben hat — erst DANN wird die WebView abgeräumt, damit
-    // die (asynchrone) JS-Save-Kette die Übergabe sicher erreicht. Persist/Flush selbst
-    // läuft im applicationScope weiter und überlebt das destroy(). Der ganze Ablauf
-    // hängt am applicationScope, nicht am (gleich gecancelten) viewModelScope.
-    val appScope = context.locator.applicationScope
+    // Beim Verlassen (Back, History, Wisch-Navigation). Den Schliess-Save samt
+    // destroy() der WebView erledigt `onClose` der WebView selbst (AndroidView-
+    // `onRelease`) — so greift er auch beim Neuaufbau über `key()`.
     DisposableEffect(Unit) {
         onDispose {
             // Seite wirklich verlassen (nicht bloss Rotation/Theme-Wechsel): laufende
-            // Aufnahme beenden — das VM bleibt bei Wisch-Navigation im Backstack.
+            // Aufnahme beenden — das VM bleibt verdeckt (Verlauf) im Backstack.
             if (activity?.isChangingConfigurations != true) vm.stopDictationOnLeave()
-            val wv = webViewRef.value
-            webViewRef.value = null
-            if (wv != null) {
-                appScope.launch(Dispatchers.Main) {
-                    vm.saveBeforeClose { js -> wv.evaluateJavascript(js, null) }
-                    wv.destroy()
-                }
-            }
         }
     }
 }
@@ -627,11 +759,37 @@ private fun resolveEditorMsg(context: Context, msg: EditorMsg): String = when (m
         msg.lockedBy ?: context.getString(R.string.editor_lock_default),
     )
     is EditorMsg.EditorError -> context.getString(R.string.editor_msg_error, msg.detail)
-    is EditorMsg.RecordFailed -> context.getString(R.string.editor_msg_record_failed, msg.detail)
+    is EditorMsg.RecordFailed -> msg.detail?.takeIf { it.isNotBlank() }
+        ?.let { context.getString(R.string.editor_msg_record_failed, it) }
+        ?: context.getString(R.string.editor_msg_record_failed_plain)
+    is EditorMsg.TranscribeFailed -> context.getString(
+        R.string.editor_msg_transcribe_failed,
+        msg.error.message(context.resources),
+    )
     EditorMsg.ServerResolved -> context.getString(R.string.editor_msg_server_resolved)
     EditorMsg.LocalResolved -> context.getString(R.string.editor_msg_local_resolved)
-    is EditorMsg.LoadFailed -> context.getString(R.string.editor_msg_load_failed, msg.detail)
+    is EditorMsg.LoadFailed -> context.getString(
+        R.string.editor_msg_load_failed,
+        msg.error.message(context.resources),
+    )
+    EditorMsg.EditorReloaded -> context.getString(R.string.editor_msg_reloaded)
     is EditorMsg.Raw -> msg.text
+}
+
+/**
+ * Skeleton über der noch bootenden WebView (bis host.html `onReady` meldet). Die
+ * WebView bleibt darunter komponiert, damit sie im Hintergrund starten kann;
+ * ausgeblendet wird per Fade.
+ */
+@Composable
+private fun EditorLoadingOverlay(visible: Boolean) {
+    AnimatedVisibility(visible = visible, enter = fadeIn(), exit = fadeOut()) {
+        SkeletonParagraphs(
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+        )
+    }
 }
 
 /**
@@ -811,10 +969,20 @@ private fun EditorWebView(
     bridge: EditorBridge,
     darkTheme: Boolean,
     onWebViewCreated: (WebView) -> Unit,
+    /** Renderer-Prozess weg; die WebView ist tot und muss ersetzt werden. */
+    onRendererGone: (WebView) -> Unit,
+    /** WebView verlässt die Komposition (lebend): Schliess-Save + destroy(). */
+    onClose: (WebView) -> Unit,
 ) {
     val context = LocalContext.current
+    // Diese WebView hat ihren Renderer verloren → beim Abräumen kein Save-Versuch
+    // mehr (JS läuft nicht mehr), nur destroy().
+    val rendererGone = remember { booleanArrayOf(false) }
     AndroidView(
         modifier = Modifier.fillMaxSize(),
+        onRelease = { wv ->
+            if (rendererGone[0]) wv.destroy() else onClose(wv)
+        },
         factory = {
             // Asset-Loader: Bundle-Verzeichnis an Origin-Root mappen, damit relative
             // Imports (./js/…) und /icons.svg same-origin auflösen.
@@ -859,6 +1027,20 @@ private fun EditorWebView(
                             }
                         }
                         return true // alles Übrige blockieren
+                    }
+
+                    // Renderer abgestürzt bzw. vom System beendet (Speicherdruck): ohne
+                    // diesen Override beendet Android die ganze App. `true` = wir räumen
+                    // auf — die tote WebView wird nicht mehr angefasst, der Screen baut
+                    // über `key()` eine neue auf (siehe onRendererGone).
+                    override fun onRenderProcessGone(
+                        view: WebView, detail: RenderProcessGoneDetail,
+                    ): Boolean {
+                        if (!rendererGone[0]) {
+                            rendererGone[0] = true
+                            onRendererGone(view)
+                        }
+                        return true
                     }
                 }
                 // Bridge injizieren (Name muss zu host.html passen: SWHost).

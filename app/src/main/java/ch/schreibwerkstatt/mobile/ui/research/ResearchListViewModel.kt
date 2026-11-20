@@ -8,6 +8,8 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import ch.schreibwerkstatt.mobile.ServiceLocator
 import ch.schreibwerkstatt.mobile.data.net.dto.ResearchItemDto
 import ch.schreibwerkstatt.mobile.data.repo.ResearchRepository
+import ch.schreibwerkstatt.mobile.ui.components.UiError
+import ch.schreibwerkstatt.mobile.ui.components.toUiError
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,8 +31,8 @@ class ResearchListViewModel(
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
+    private val _error = MutableStateFlow<UiError?>(null)
+    val error: StateFlow<UiError?> = _error.asStateFlow()
 
     /** True, sobald mindestens einmal (egal ob erfolgreich) geladen wurde. */
     private val _loaded = MutableStateFlow(false)
@@ -53,7 +55,7 @@ class ResearchListViewModel(
                 }
                 .onFailure {
                     _loadFailed.value = true
-                    _error.value = it.message
+                    _error.value = it.toUiError()
                 }
             _loading.value = false
             _loaded.value = true

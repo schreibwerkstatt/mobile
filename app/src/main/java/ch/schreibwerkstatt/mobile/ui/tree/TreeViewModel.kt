@@ -15,12 +15,17 @@ import ch.schreibwerkstatt.mobile.data.repo.BUCHTYP_TAGEBUCH
 import ch.schreibwerkstatt.mobile.data.repo.ContentRepository
 import ch.schreibwerkstatt.mobile.data.repo.SyncCoordinator
 import ch.schreibwerkstatt.mobile.data.repo.diaryDateOf
+import ch.schreibwerkstatt.mobile.ui.components.UiError
+import ch.schreibwerkstatt.mobile.ui.components.toUiError
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.YearMonth
@@ -31,6 +36,17 @@ sealed interface TreeRow {
     data class Page(val id: Long, val name: String, override val depth: Int) : TreeRow
 }
 
+/** Einmalige Snackbar-Meldung des Baums. */
+sealed interface TreeMessage {
+    /** Tagebuch-Eintrag konnte nicht angelegt werden. */
+    data class CreateFailed(val error: UiError) : TreeMessage
+    /** Neuladen fehlgeschlagen, angezeigt wird weiter der vorhandene (gecachte) Stand. */
+    data class StaleTree(val error: UiError) : TreeMessage
+}
+
+/** Aufforderung an den Screen, einen Abschnitt im Editor zu öffnen. */
+data class OpenPage(val pageId: Long, val pageName: String)
+
 data class TreeUiState(
     val bookId: Long,
     val rows: List<TreeRow> = emptyList(),
@@ -39,7 +55,11 @@ data class TreeUiState(
     val loading: Boolean = true,
     /** true, während ein Pull-to-Refresh (Delta-Pull + Baum-Neuladen) läuft. */
     val refreshing: Boolean = false,
-    val error: String? = null,
+    /**
+     * Ladefehler, nur gesetzt wenn KEINE Zeilen (weder Server noch Cache) vorliegen →
+     * Vollbild-Fehler. Mit Inhalt meldet ein Fehler sich als [TreeMessage.StaleTree].
+     */
+    val error: UiError? = null,
     /** true = Buch ist ein Tagebuch (`buchtyp='tagebuch'`) → Kalender-Modus verfügbar. */
     val isDiary: Boolean = false,
     /** true = Kalender statt Liste anzeigen (nur für Tagebücher relevant). */
@@ -51,7 +71,7 @@ data class TreeUiState(
     /** true, während ein Eintrag serverseitig angelegt wird. */
     val creatingEntry: Boolean = false,
     /** Einmalige Fehlermeldung (Snackbar); nach Anzeige via [TreeViewModel.consumeMessage] löschen. */
-    val message: String? = null,
+    val message: TreeMessage? = null,
     /** Treffer der Inhalts-Volltextsuche zur aktuellen Query (leer = keine/inaktiv). */
     val contentHits: List<PageContentHit> = emptyList(),
 )
@@ -77,6 +97,14 @@ class TreeViewModel(
      * liessen sich lokal vorhandene Einträge offline nicht öffnen.
      */
     @Volatile private var cachedDiaryEntries: Map<String, Long> = emptyMap()
+
+    // Navigation als Ereignis statt UI-Lambda aus dem viewModelScope (das hielte den
+    // Screen/NavController über Konfigurationswechsel fest).
+    private val _openPage = Channel<OpenPage>(Channel.BUFFERED)
+    val openPage: Flow<OpenPage> = _openPage.receiveAsFlow()
+
+    /** true, sobald der Baum (Server oder Cache) mindestens einmal gezeigt wurde. */
+    private var cacheShown = false
 
     init {
         // Buchtyp aus dem Cache → entscheidet, ob der Kalender-Modus angeboten wird.
@@ -120,7 +148,16 @@ class TreeViewModel(
 
     fun load() {
         viewModelScope.launch {
-            _state.value = _state.value.copy(loading = true, error = null)
+            // Offline-first: zuerst die zuletzt geladene Gliederung zeigen, dann den
+            // Server fragen. Schlägt der Abruf fehl, bleibt der Cache stehen.
+            if (!cacheShown && _state.value.rows.isEmpty()) {
+                cacheShown = true
+                repo.cachedTree(bookId)?.let { cached ->
+                    val rows = flattenTree(cached)
+                    _state.update { it.copy(rows = rows, diaryEntries = diaryEntriesOf(rows)) }
+                }
+            }
+            _state.update { it.copy(loading = true, error = null) }
             fetchTree()
             _state.update { it.copy(loading = false) }
         }
@@ -150,11 +187,14 @@ class TreeViewModel(
                 }
             }
             .onFailure { e ->
+                val error = e.toUiError()
                 _state.update {
-                    it.copy(
-                        error = e.message,
-                        diaryEntries = if (it.rows.isEmpty()) cachedDiaryEntries else it.diaryEntries,
-                    )
+                    if (it.rows.isNotEmpty()) {
+                        // Inhalt bleibt sichtbar; nur ein nicht-blockierender Hinweis.
+                        it.copy(error = null, message = TreeMessage.StaleTree(error))
+                    } else {
+                        it.copy(error = error, diaryEntries = cachedDiaryEntries)
+                    }
                 }
             }
     }
@@ -195,28 +235,30 @@ class TreeViewModel(
 
     /**
      * Eintrag für `dateIso` (`YYYY-MM-DD`) öffnen: existiert er, direkt; sonst
-     * serverseitig anlegen. Nach Erfolg wird der Baum neu geladen und [onOpen]
-     * mit der Page-ID aufgerufen (für die Editor-Navigation).
+     * serverseitig anlegen. Das Öffnen läuft als [openPage]-Ereignis — nach dem
+     * Anlegen sofort; Delta-Pull und Baum-Neuladen folgen getrennt im Hintergrund.
      */
-    fun openOrCreateEntry(dateIso: String, onOpen: (pageId: Long, pageName: String) -> Unit) {
-        _state.value.diaryEntries[dateIso]?.let { onOpen(it, dateIso); return }
+    fun openOrCreateEntry(dateIso: String) {
+        _state.value.diaryEntries[dateIso]?.let { _openPage.trySend(OpenPage(it, dateIso)); return }
         if (_state.value.creatingEntry) return
+        _state.update { it.copy(creatingEntry = true) }
         viewModelScope.launch {
-            _state.update { it.copy(creatingEntry = true) }
             repo.createDiaryEntry(bookId, dateIso)
                 .onSuccess { pageId ->
-                    repo.syncBook(bookId)
-                    load()
                     _state.update { it.copy(creatingEntry = false) }
-                    onOpen(pageId, dateIso)
+                    _openPage.send(OpenPage(pageId, dateIso))
+                    viewModelScope.launch {
+                        repo.syncBook(bookId)
+                        load()
+                    }
                 }
                 .onFailure { e ->
-                    _state.update { it.copy(creatingEntry = false, message = e.error()) }
+                    _state.update {
+                        it.copy(creatingEntry = false, message = TreeMessage.CreateFailed(e.toUiError()))
+                    }
                 }
         }
     }
-
-    private fun Throwable.error(): String = message ?: this::class.simpleName ?: "Fehler"
 
     private fun diaryEntriesOf(rows: List<TreeRow>): Map<String, Long> {
         val out = LinkedHashMap<String, Long>()

@@ -37,6 +37,8 @@ data class SettingsUiState(
     val spellcheck: Boolean = true,
     /** Bietet der Server LanguageTool an? null = noch unbekannt/nicht erreichbar. */
     val spellcheckAvailable: Boolean? = null,
+    /** Wischen nach links auf Abschnittszeilen öffnet den Verlauf. */
+    val swipeToHistory: Boolean = true,
 )
 
 class SettingsViewModel(
@@ -74,6 +76,9 @@ class SettingsViewModel(
         viewModelScope.launch {
             settings.backgroundSync.collect { on -> _state.update { it.copy(backgroundSync = on) } }
         }
+        viewModelScope.launch {
+            settings.swipeToHistory.collect { on -> _state.update { it.copy(swipeToHistory = on) } }
+        }
     }
 
     fun setThemeMode(mode: ThemeMode) {
@@ -86,6 +91,10 @@ class SettingsViewModel(
 
     fun setSpellcheck(enabled: Boolean) {
         viewModelScope.launch { settings.setSpellcheck(enabled) }
+    }
+
+    fun setSwipeToHistory(enabled: Boolean) {
+        viewModelScope.launch { settings.setSwipeToHistory(enabled) }
     }
 
     /** Lokales Abmelden: nur den Token verwerfen (kein Server-Revoke). */

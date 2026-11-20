@@ -16,8 +16,9 @@ import java.util.UUID
         PageFtsEntity::class,
         SyncCursorEntity::class,
         PendingWriteEntity::class,
+        TreeCacheEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -26,6 +27,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun pageDao(): PageDao
     abstract fun syncCursorDao(): SyncCursorDao
     abstract fun pendingWriteDao(): PendingWriteDao
+    abstract fun treeCacheDao(): TreeCacheDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -44,7 +46,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // Migration-Objekt via .addMigrations(...) ergänzen (Schemas liegen
                     // exportiert unter app/schemas/ → mit MigrationTestHelper testbar).
                     // Nur ein Downgrade (Dev/Rollback) darf destruktiv neu aufsetzen.
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .fallbackToDestructiveMigrationOnDowngrade()
                     .build().also { instance = it }
             }
@@ -83,5 +85,15 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE pages ADD COLUMN baseHtml TEXT")
         db.execSQL("ALTER TABLE pending_writes ADD COLUMN baseHtml TEXT")
+    }
+}
+
+/** 5 → 6: Offline-Cache der Buch-Gliederung (`tree_cache`), startet leer. */
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `tree_cache` (`bookId` INTEGER NOT NULL, `json` TEXT NOT NULL, " +
+                "`fetchedAt` INTEGER NOT NULL, PRIMARY KEY(`bookId`))"
+        )
     }
 }

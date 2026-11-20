@@ -56,15 +56,17 @@ html, body, #mount { overflow-x: hidden; max-width: 100%; }
   overscroll-behavior: none !important;
   font-feature-settings: "kern" 1, "liga" 1, "onum" 1 !important;
 }
-/* Trennlinie (<hr>, Android-Toolbar `insertHr`). Das Bundle-CSS
-   (focus-mode.css `.focus-editor__content hr { border:none; height:0 }`)
-   neutralisiert <hr> für Web/Mac und macht es damit unsichtbar — es wird
-   NACH dieser Datei injiziert, also hier mit `!important` zurückholen.
-   Sichtbare Linie über die volle Schreibbreite, themefähig. Sichtbarkeit
-   über currentColor (folgt der Textfarbe, kontrastiert also in Hell wie
-   Dunkel), gedimmt — nicht über --color-border, dessen Fallback im
-   Dark-Theme zu schwach war. */
-.focus-editor__content hr {
+/* Trennlinie (<hr>, Android-Toolbar `insertHr`) — nur für Bundles, die <hr>
+   nicht selbst darstellen. Ältere Bundle-CSS (focus-content.css
+   `.focus-editor__content hr { border:none; height:0 }`) machen <hr>
+   unsichtbar; neuere zeichnen <hr>, `hr.pagebreak` und `hr.blankpage` wie
+   Web/Mac. Welches Bundle läuft, misst host.html (`markHrFallback`) und setzt
+   `sw-hr-fallback` nur im ersten Fall — sonst übersteuerte diese Regel die
+   Bundle-Darstellung. Das Bundle-CSS wird NACH dieser Datei injiziert, daher
+   `!important`. Sichtbarkeit über currentColor (folgt der Textfarbe,
+   kontrastiert in Hell wie Dunkel), gedimmt — nicht über --color-border,
+   dessen Fallback im Dark-Theme zu schwach war. */
+.sw-hr-fallback .focus-editor__content hr {
   border: none !important;
   border-top: 1px solid currentColor !important;
   opacity: 0.28;
@@ -87,19 +89,28 @@ html, body, #mount { overflow-x: hidden; max-width: 100%; }
    den Zeilenanfang nach oben). */
 .focus-editor__content ul.todo > li.todo-item {
   display: flex; align-items: flex-start; gap: 0.5em; margin: 0.35em 0;
-  line-height: 1.6;
+  line-height: 1.6; position: relative;
 }
 .focus-editor__content ul.todo > li.todo-item > input[type="checkbox"] {
   width: 1.25em; height: 1.25em;
   margin-top: calc((1.6em - 1.25em) / 2);
   accent-color: var(--color-primary, #4b6); cursor: pointer; flex: 0 0 auto;
+  /* Über der Trefferfläche unten, damit ein Tipp direkt auf die Box nativ toggelt. */
+  position: relative; z-index: 1;
+}
+/* Trefferfläche der Checkbox (≥ 48 px, Touch-Mindestgrösse) ohne die sichtbare
+   Box zu vergrössern: unsichtbares Feld um die Box, ragt nach links in den
+   Rand-Innenabstand des Editors, endet rechts VOR dem Text (Box 1.25em + Abstand
+   0.5em → Text ab 1.75em). Ein Tipp darauf trifft das <li>; host.html leitet ihn
+   als Klick an die Checkbox weiter. */
+.focus-editor__content ul.todo > li.todo-item::before {
+  content: ""; position: absolute;
+  left: -24px; width: calc(24px + 1.5em);
+  top: calc(0.8em - 24px); height: 48px;
 }
 .focus-editor__content ul.todo > li.todo-item > .todo-text {
   flex: 1 1 auto; min-width: 0;
 }
 .focus-editor__content ul.todo > li.todo-item > input[type="checkbox"]:checked + .todo-text {
   text-decoration: line-through; color: var(--color-muted, #999);
-}
-.sw-boot-error {
-  font: 15px/1.5 system-ui, sans-serif; color: #b00020; padding: 24px;
 }

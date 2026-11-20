@@ -67,6 +67,8 @@ class EditorBridge(
      * Schlüssel = i18n-Keys des Controllers (`spellcheck.status.*` etc.).
      */
     private val spellcheckStrings: Map<String, String> = emptyMap(),
+    /** App-Sprache (BCP-47) für `<html lang>` in host.html. */
+    private val uiLanguage: String = "de",
 ) {
     private val json = Json { explicitNulls = false }
 
@@ -252,6 +254,10 @@ class EditorBridge(
     @JavascriptInterface
     fun prefersDark(): Boolean = darkTheme
 
+    /** Synchroner Boot-Call aus host.html: Dokumentsprache (`<html lang>`) = App-Sprache. */
+    @JavascriptInterface
+    fun uiLanguage(): String = uiLanguage
+
     @JavascriptInterface
     fun onReady() = onEvent(EditorEvent.Ready)
 
@@ -259,6 +265,7 @@ class EditorBridge(
     @JavascriptInterface
     fun notifyActivity() = onActivity()
 
+    /** Fehler aus host.html; vor `onReady` heisst das: der Editor ist nicht gestartet. */
     @JavascriptInterface
     fun notifyError(msg: String) = onEvent(EditorEvent.Error(msg))
 

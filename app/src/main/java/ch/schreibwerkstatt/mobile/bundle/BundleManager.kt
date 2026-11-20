@@ -7,7 +7,10 @@ import ch.schreibwerkstatt.mobile.data.net.AuthInterceptor
 import ch.schreibwerkstatt.mobile.data.net.dto.ApiErrorDto
 import ch.schreibwerkstatt.mobile.data.net.dto.BundleManifestDto
 import ch.schreibwerkstatt.mobile.data.prefs.TokenStore
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -15,6 +18,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipInputStream
 
 /**
@@ -37,13 +41,25 @@ import java.util.zip.ZipInputStream
  * fremden `editorApi` trägt, wird ebenso abgewiesen. In beiden Fällen bleibt ein
  * gecachtes Bundle in Betrieb und [updateRequired] wird gesetzt (Hinweis
  * „App-Update nötig"); ohne Cache endet [ensureBundle] mit [EditorApiUnsupportedException].
+ *
+ * Cache zuerst: Liegt schon ein lauffähiges Bundle vor, liefert [ensureBundle] es sofort
+ * und prüft den Server nur im Hintergrund. Ein neues Bundle wird dabei nur nach
+ * [pendingDir] vorbereitet und erst beim nächsten [ensureBundle] eingesetzt — nie unter
+ * einer laufenden WebView. **Why:** In einem Netz, das „verbunden" meldet, aber nichts
+ * durchlässt, liefe die Prüfung in die OkHttp-Timeouts, und der Editor bliebe so lange
+ * leer, obwohl alles zum Offline-Öffnen da ist. Nur ohne Cache wartet [ensureBundle]
+ * auf den Download.
  */
-class BundleManager(
+class BundleManager internal constructor(
     private val context: Context,
-    tokenStore: TokenStore,
+    token: () -> String?,
+    onUnauthorized: () -> Unit,
 ) {
+    constructor(context: Context, tokenStore: TokenStore) :
+        this(context, tokenStore::token, tokenStore::clear)
+
     private val http: OkHttpClient = OkHttpClient.Builder()
-        .addInterceptor(AuthInterceptor(tokenStore::token, tokenStore::clear))
+        .addInterceptor(AuthInterceptor(token, onUnauthorized))
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
@@ -52,6 +68,11 @@ class BundleManager(
     private val etagFile: File = File(context.filesDir, "editor-bundle.etag")
     /** Neues Bundle wird hier fertig entpackt und erst dann gegen [bundleDir] getauscht. */
     private val stagingDir: File = File(context.filesDir, "editor-bundle.staging")
+    /** Download-Ziel der Hintergrund-Prüfung (eigenes Verzeichnis, läuft ohne [lock]). */
+    private val downloadDir: File = File(context.filesDir, "editor-bundle.download")
+    /** Fertig geprüftes neues Bundle, das beim nächsten [ensureBundle] eingesetzt wird. */
+    private val pendingDir: File = File(context.filesDir, "editor-bundle.pending")
+    private val pendingEtagFile: File = File(context.filesDir, "editor-bundle.pending.etag")
     private val retiredDir: File = File(context.filesDir, "editor-bundle.old")
 
     /**
@@ -59,6 +80,10 @@ class BundleManager(
      * würden zwei Läufe gleichzeitig dasselbe Verzeichnis entpacken bzw. löschen.
      */
     private val lock = Mutex()
+
+    /** App-weiter Scope der Hintergrund-Prüfung (BundleManager ist ein Singleton). */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val backgroundSyncRunning = AtomicBoolean(false)
 
     /**
      * Der Server liefert nur noch Bundles eines Majors, den diese App-Version nicht
@@ -75,16 +100,59 @@ class BundleManager(
         File(dir, "js/editor/focus/standalone.js").exists()
 
     /**
-     * Synchronisiert das Bundle gegen den Server. Liefert true, wenn danach ein
-     * lauffähiges Bundle bereitliegt (auch bei 304/Offline mit vorhandenem Cache).
+     * Liefert true, wenn ein lauffähiges Bundle bereitliegt. Mit Cache sofort (ein
+     * vorbereitetes neues Bundle wird vorher eingesetzt, die Server-Prüfung läuft im
+     * Hintergrund weiter); ohne Cache erst nach dem Download.
      */
     suspend fun ensureBundle(baseUrl: String): Result<Boolean> = lock.withLock {
-        withContext(Dispatchers.IO) { syncBundle(baseUrl) }
+        withContext(Dispatchers.IO) {
+            promotePending()
+            if (isReady()) {
+                refreshHostPage()
+                startBackgroundSync(baseUrl)
+                Result.success(true)
+            } else {
+                syncBundle(baseUrl, stage = false)
+            }
+        }
     }
 
-    private fun syncBundle(baseUrl: String): Result<Boolean> {
+    /** Höchstens eine Hintergrund-Prüfung zugleich; sie hält [lock] nur für den Tausch nach [pendingDir]. */
+    private fun startBackgroundSync(baseUrl: String) {
+        if (!backgroundSyncRunning.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                syncBundle(baseUrl, stage = true)
+                    .onFailure { Log.i(TAG, "editor-bundle: Hintergrund-Prüfung fehlgeschlagen: ${it.message}") }
+            } finally {
+                backgroundSyncRunning.set(false)
+            }
+        }
+    }
+
+    /** Vorbereitetes Bundle aus [pendingDir] einsetzen (nur unter [lock] aufrufen). */
+    private fun promotePending() {
+        if (!pendingDir.exists()) return
+        if (isReady(pendingDir)) {
+            swapIn(pendingDir)
+            pendingEtagFile.takeIf { it.exists() }?.let { etagFile.writeText(it.readText()) }
+                ?: etagFile.delete()
+        } else {
+            pendingDir.deleteRecursively()
+        }
+        pendingEtagFile.delete()
+    }
+
+    /**
+     * Prüft das Bundle gegen den Server. [stage] = false (kein Cache): ein neues Bundle
+     * direkt einsetzen. [stage] = true (Hintergrund): nur nach [pendingDir] vorbereiten.
+     */
+    private suspend fun syncBundle(baseUrl: String, stage: Boolean): Result<Boolean> {
         val url = baseUrl.trimEnd('/') + "/content/editor-bundle.zip"
-        val storedEtag = etagFile.takeIf { it.exists() }?.readText()?.trim().orEmpty()
+        val workDir = if (stage) downloadDir else stagingDir
+        // Liegt schon ein neueres Bundle bereit, gilt dessen ETag als „aktueller Stand".
+        val etagSource = if (stage && pendingEtagFile.exists() && isReady(pendingDir)) pendingEtagFile else etagFile
+        val storedEtag = etagSource.takeIf { it.exists() }?.readText()?.trim().orEmpty()
         return try {
             val reqBuilder = Request.Builder().url(url)
                 .header(EDITOR_API_HEADER, SUPPORTED_EDITOR_API.joinToString(","))
@@ -98,7 +166,8 @@ class BundleManager(
                         // ist aber app-versioniert (mit dem APK ausgeliefert), nicht
                         // bundle-versioniert: bei jedem Sync frisch aus den Assets
                         // spiegeln, sonst hinkt sie nach einem App-Update hinterher.
-                        refreshHostPage()
+                        // (Mit Cache erledigt das schon ensureBundle.)
+                        if (!stage) refreshHostPage()
                         updateRequired = false
                         Result.success(isReady())
                     }
@@ -115,31 +184,42 @@ class BundleManager(
                         // das laufende Bundle bleibt bis zum Tausch unangetastet. Ein
                         // abgerissener Download oder eine Nicht-Zip-Antwort (Captive-Portal)
                         // zerstört so nie das funktionierende Offline-Bundle.
-                        extractZip(body.byteStream(), stagingDir)
-                        copyHostPage(stagingDir)
-                        check(isReady(stagingDir)) { "editor-bundle: unvollständig" }
-                        val major = manifestEditorApi(stagingDir)
+                        extractZip(body.byteStream(), workDir)
+                        copyHostPage(workDir)
+                        check(isReady(workDir)) { "editor-bundle: unvollständig" }
+                        val major = manifestEditorApi(workDir)
                         if (major !in SUPPORTED_EDITOR_API) {
                             // Server ohne Header-Prüfung, aber Bundle eines fremden Majors.
-                            stagingDir.deleteRecursively()
+                            workDir.deleteRecursively()
                             Log.w(TAG, "editor-bundle: Manifest meldet editorApi $major, die App kann $SUPPORTED_EDITOR_API")
                             return@use editorApiUnsupported()
                         }
-                        swapInStaging()
-                        resp.header("ETag")?.let { etagFile.writeText(it) }
+                        val etag = resp.header("ETag")
+                        if (stage) {
+                            // Kurz unter dem Lock: ensureBundle setzt pendingDir nie halb getauscht ein.
+                            lock.withLock {
+                                pendingDir.deleteRecursively()
+                                check(workDir.renameTo(pendingDir)) { "editor-bundle: Vorbereiten fehlgeschlagen" }
+                                if (etag != null) pendingEtagFile.writeText(etag) else pendingEtagFile.delete()
+                            }
+                        } else {
+                            swapIn(workDir)
+                            if (etag != null) etagFile.writeText(etag) else etagFile.delete()
+                        }
                         updateRequired = false
                         Result.success(isReady())
                     }
                     else -> {
                         // Offline/Fehler: vorhandenes Bundle weiterverwenden.
-                        if (isReady()) { refreshHostPage(); Result.success(true) }
+                        if (isReady()) { if (!stage) refreshHostPage(); Result.success(true) }
                         else Result.failure(IllegalStateException("editor-bundle HTTP ${resp.code}"))
                     }
                 }
             }
         } catch (e: Exception) {
-            stagingDir.deleteRecursively()
-            if (isReady()) { refreshHostPage(); Result.success(true) } else Result.failure(e)
+            workDir.deleteRecursively()
+            if (stage) Result.failure(e)
+            else if (isReady()) { refreshHostPage(); Result.success(true) } else Result.failure(e)
         }
     }
 
@@ -166,13 +246,13 @@ class BundleManager(
             .getOrNull()?.editorApi ?: 1
     }
 
-    /** Fertiges Staging-Bundle per Rename an die Stelle von [bundleDir] setzen. */
-    private fun swapInStaging() {
+    /** Fertiges Bundle aus [from] per Rename an die Stelle von [bundleDir] setzen. */
+    private fun swapIn(from: File) {
         retiredDir.deleteRecursively()
         if (bundleDir.exists() && !bundleDir.renameTo(retiredDir)) {
             bundleDir.deleteRecursively()
         }
-        check(stagingDir.renameTo(bundleDir)) { "editor-bundle: Tausch fehlgeschlagen" }
+        check(from.renameTo(bundleDir)) { "editor-bundle: Tausch fehlgeschlagen" }
         retiredDir.deleteRecursively()
     }
 

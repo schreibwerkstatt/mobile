@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -45,11 +46,11 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.os.ConfigurationCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import ch.schreibwerkstatt.mobile.R
 import kotlinx.coroutines.delay
-import java.time.DayOfWeek
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -57,6 +58,7 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.time.format.TextStyle
+import java.time.temporal.WeekFields
 import java.util.Locale
 
 /**
@@ -82,19 +84,30 @@ fun DiaryCalendar(
     onTodayClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val locale = Locale.getDefault()
+    // Locale aus der aktuellen Konfiguration (nicht eingefroren beim Prozessstart).
+    val configuration = LocalConfiguration.current
+    val locale = remember(configuration) {
+        ConfigurationCompat.getLocales(configuration)[0] ?: Locale.getDefault()
+    }
+    val firstDayOfWeek = remember(locale) { WeekFields.of(locale).firstDayOfWeek }
+    val monthFormatter = remember(locale) { DateTimeFormatter.ofPattern("LLLL yyyy", locale) }
+    val dayDescFormatter = remember(locale) {
+        DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(locale)
+    }
     val today = rememberToday()
     val todayHasEntry = entries.containsKey(today.toString())
 
+    // Aussen nur 8dp Rand, damit die Tageszellen auch bei 360dp Breite ≥ 48dp
+    // Tippfläche haben (344dp / 7). Kopf, Hinweise und Button rücken um weitere 8dp ein.
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         // Kopf: Monat + Navigation
         Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, start = 8.dp, end = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onPrevMonth) {
@@ -104,7 +117,7 @@ fun DiaryCalendar(
                 )
             }
             Text(
-                text = monthLabel(month, locale),
+                text = monthLabel(month, monthFormatter, locale),
                 modifier = Modifier.weight(1f),
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 style = MaterialTheme.typography.titleMedium,
@@ -119,10 +132,11 @@ fun DiaryCalendar(
         }
 
         if (loading) {
-            LinearProgressIndicator(Modifier.fillMaxWidth())
+            LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 8.dp))
         } else if (error != null) {
             Row(
                 modifier = Modifier
+                    .padding(horizontal = 8.dp)
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.errorContainer)
@@ -140,10 +154,10 @@ fun DiaryCalendar(
             }
         }
 
-        // Wochentags-Header (Mo … So)
+        // Wochentags-Header ab dem ersten Wochentag der Locale (de: Mo, en-US: So)
         Row(Modifier.fillMaxWidth()) {
             for (i in 0..6) {
-                val dow = DayOfWeek.MONDAY.plus(i.toLong())
+                val dow = firstDayOfWeek.plus(i.toLong())
                 Text(
                     text = dow.getDisplayName(TextStyle.SHORT, locale),
                     modifier = Modifier.weight(1f),
@@ -154,22 +168,28 @@ fun DiaryCalendar(
             }
         }
 
-        // 6 Wochen × 7 Tage
+        // 6 Wochen × 7 Tage. Keine Abstände zwischen den Zellen: die ganze Zelle ist
+        // Tippfläche, die sichtbare Kachel sitzt mit Innenrand darin (siehe DayCell).
         val first = month.atDay(1)
-        val offset = (first.dayOfWeek.value + 6) % 7  // Montag = 0
+        val offset = (first.dayOfWeek.value - firstDayOfWeek.value + 7) % 7
         val gridStart = first.minusDays(offset.toLong())
-        for (week in 0 until 6) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                for (dow in 0 until 7) {
-                    val date = gridStart.plusDays((week * 7 + dow).toLong())
-                    DayCell(
-                        date = date,
-                        inMonth = date.month == month.month,
-                        hasEntry = entries.containsKey(date.toString()),
-                        isToday = date == today,
-                        onClick = { onDayClick(date.toString()) },
-                        modifier = Modifier.weight(1f),
-                    )
+        Column {
+            for (week in 0 until 6) {
+                Row(Modifier.fillMaxWidth()) {
+                    for (dow in 0 until 7) {
+                        val date = gridStart.plusDays((week * 7 + dow).toLong())
+                        DayCell(
+                            date = date,
+                            inMonth = date.month == month.month,
+                            hasEntry = entries.containsKey(date.toString()),
+                            isToday = date == today,
+                            // Während ein Eintrag angelegt wird, keine weiteren Tipps.
+                            enabled = !creating,
+                            dayDescFormatter = dayDescFormatter,
+                            onClick = { onDayClick(date.toString()) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
             }
         }
@@ -178,7 +198,7 @@ fun DiaryCalendar(
             onClick = onTodayClick,
             // Immer aktiv: öffnet den vorhandenen heutigen Eintrag oder legt ihn an.
             enabled = !creating,
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, start = 8.dp, end = 8.dp),
         ) {
             if (creating) {
                 CircularProgressIndicator(
@@ -221,6 +241,8 @@ private fun DayCell(
     inMonth: Boolean,
     hasEntry: Boolean,
     isToday: Boolean,
+    enabled: Boolean,
+    dayDescFormatter: DateTimeFormatter,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -238,20 +260,25 @@ private fun DayCell(
         if (isToday) add(stringResource(R.string.a11y_calendar_today))
         add(stringResource(if (hasEntry) R.string.a11y_calendar_has_entry else R.string.a11y_calendar_no_entry))
     }.joinToString(", ")
+    val clickLabel = stringResource(
+        if (hasEntry) R.string.a11y_action_open else R.string.a11y_calendar_create_entry
+    )
+    // Äussere Box = Tippfläche (volle Zellbreite, ≥ 48dp), innere Kachel mit 2dp Rand.
     Box(
         modifier = modifier
             .aspectRatio(1f)
+            .clickable(enabled = enabled, onClickLabel = clickLabel, onClick = onClick)
+            .semantics {
+                contentDescription = description
+                role = Role.Button
+            }
+            .padding(2.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(bg)
             .then(
                 if (isToday) Modifier.border(2.dp, scheme.primary, RoundedCornerShape(8.dp))
                 else Modifier
-            )
-            .clickable(onClickLabel = stringResource(R.string.a11y_action_open), onClick = onClick)
-            .semantics {
-                contentDescription = description
-                role = Role.Button
-            },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -276,12 +303,7 @@ private fun DayCell(
     }
 }
 
-/** Vollständiges, lokalisiertes Datum für Screenreader-Labels der Kalenderzellen. */
-private val dayDescFormatter: DateTimeFormatter =
-    DateTimeFormatter.ofLocalizedDate(FormatStyle.FULL).withLocale(Locale.getDefault())
-
-private fun monthLabel(month: YearMonth, locale: Locale): String {
-    val name = month.month.getDisplayName(TextStyle.FULL, locale)
+/** Monatstitel im Standalone-Format der Locale (`LLLL yyyy`), erster Buchstabe gross. */
+private fun monthLabel(month: YearMonth, formatter: DateTimeFormatter, locale: Locale): String =
+    month.format(formatter)
         .replaceFirstChar { if (it.isLowerCase()) it.titlecase(locale) else it.toString() }
-    return "$name ${month.year}"
-}

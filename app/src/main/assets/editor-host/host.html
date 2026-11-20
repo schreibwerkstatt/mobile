@@ -25,6 +25,12 @@
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
         if (dark) document.documentElement.style.background = '#1a1f3a';
       } catch (e) { /* nicht-fatal: Editor läuft im Hell-Default weiter */ }
+      // Dokumentsprache = App-Sprache (SWHost.uiLanguage(), BCP-47); `de` im
+      // Markup ist nur der Fallback für Hosts ohne diesen Call.
+      try {
+        const lang = window.SWHost && window.SWHost.uiLanguage && window.SWHost.uiLanguage();
+        if (lang) document.documentElement.setAttribute('lang', String(lang));
+      } catch (e) { /* nicht-fatal */ }
     })();
 
     // Promise-Registry für die native Bridge. Die @JavascriptInterface-Methoden
@@ -463,6 +469,21 @@
       // es nicht). Bubbling-Phase, damit der native Toggle schon angewandt ist.
       document.addEventListener('click', (e) => {
         const t = e.target;
+        // Tipp auf die vergrösserte Trefferfläche (li.todo-item::before, siehe
+        // editor-host.css) trifft das <li> selbst: links vom Text → als Klick an
+        // die Checkbox weiterreichen (löst diesen Handler erneut mit der Box aus).
+        if (t && t.matches && t.matches('li.todo-item')) {
+          const box = t.querySelector(':scope > input[type="checkbox"]');
+          const span = t.querySelector(':scope > .todo-text');
+          const textLeft = span ? span.getBoundingClientRect().left : Infinity;
+          const r = box && box.getBoundingClientRect();
+          const nearBox = r && Math.abs(e.clientY - (r.top + r.height / 2)) <= 24;
+          if (nearBox && e.clientX < textLeft) {
+            e.preventDefault();
+            box.click();
+          }
+          return;
+        }
         if (!t || t.tagName !== 'INPUT' || t.type !== 'checkbox') return;
         if (!t.closest('li.todo-item')) return;
         if (t.checked) t.setAttribute('checked', '');
@@ -501,11 +522,12 @@
       }, false);
     })();
 
-    function bootError(msg) {
-      document.getElementById('mount').innerHTML =
-        '<div class="sw-boot-error">Editor konnte nicht geladen werden:<br>' +
-        String(msg).replace(/</g, '&lt;') + '</div>';
-      try { window.SWHost && window.SWHost.notifyError(String(msg)); } catch (e) {}
+    // Boot fehlgeschlagen: nur melden — die native Seite zeigt den lokalisierten
+    // Fehler samt „Erneut versuchen" über der WebView (EditorViewModel.bootFailed).
+    // Bewusst nur die Message, kein Stack (der landet sonst im UI).
+    function bootError(e) {
+      const msg = (e && e.message) ? e.message : String(e || '');
+      try { window.SWHost && window.SWHost.notifyError(msg); } catch (err) {}
     }
 
     // CSS-Closure aus dem Bundle-Manifest laden und injizieren (gleiche Reihenfolge
@@ -513,13 +535,44 @@
     async function injectCss() {
       try {
         const manifest = await fetch('./bundle-manifest.json').then(r => r.json());
+        const loaded = [];
         for (const href of (manifest.cssFiles || [])) {
           const link = document.createElement('link');
           link.rel = 'stylesheet';
           link.href = './' + href;
+          loaded.push(new Promise((res) => { link.onload = res; link.onerror = res; }));
           document.head.appendChild(link);
         }
+        await Promise.all(loaded);
       } catch (e) { /* CSS optional — Editor läuft auch ohne Styles */ }
+      markHrFallback();
+    }
+
+    // Trennlinie: Ältere Bundles setzen `<hr>` im Focus-Editor auf
+    // `border:none; height:0` (unsichtbar); neuere stellen `<hr>`,
+    // `hr.pagebreak` und `hr.blankpage` selbst dar. Welches Bundle läuft,
+    // bestimmt der Server — darum hier messen statt raten: eine Probe-<hr>
+    // im Editor-Container, nach dem Laden des Bundle-CSS. Nur wenn sie
+    // unsichtbar ist, schaltet `sw-hr-fallback` die App-Linie in
+    // editor-host.css ein; sonst gewinnt die Bundle-Darstellung.
+    function markHrFallback() {
+      try {
+        const box = document.createElement('div');
+        box.className = 'focus-editor__content';
+        box.setAttribute('aria-hidden', 'true');
+        box.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;left:-9999px;top:0;width:100px';
+        const hr = document.createElement('hr');
+        box.appendChild(hr);
+        document.body.appendChild(box);
+        const cs = getComputedStyle(hr);
+        const visible = (cs.borderTopStyle !== 'none' && parseFloat(cs.borderTopWidth) > 0)
+          || (cs.borderBottomStyle !== 'none' && parseFloat(cs.borderBottomWidth) > 0)
+          || hr.getBoundingClientRect().height > 0;
+        box.remove();
+        document.documentElement.classList.toggle('sw-hr-fallback', !visible);
+      } catch (e) {
+        document.documentElement.classList.add('sw-hr-fallback');
+      }
     }
 
     // Bridge, die der Editor-Kern erwartet (siehe focus/standalone.js):
@@ -559,7 +612,7 @@
         try { window.__sw.installAnchor(handle.host); } catch (e) {}
         try { window.SWHost && window.SWHost.onReady(); } catch (e) {}
       } catch (e) {
-        bootError(e && e.stack || e);
+        bootError(e);
       }
     })();
   </script>

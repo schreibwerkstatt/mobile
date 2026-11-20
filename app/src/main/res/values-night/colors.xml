@@ -1,0 +1,4 @@
+<resources>
+    <!-- Navy (= Compose-Dunkel-background) fuer das Window-Theme im Nachtmodus (ueberschreibt values/colors.xml). -->
+    <color name="brand_window_bg">#1A1F3A</color>
+</resources>

@@ -13,6 +13,8 @@
     <string name="a11y_calendar_today">heute</string>
     <string name="a11y_calendar_has_entry">Eintrag vorhanden</string>
     <string name="a11y_calendar_no_entry">kein Eintrag</string>
+    <string name="a11y_calendar_create_entry">Eintrag anlegen</string>
+    <string name="a11y_action_open_history">Verlauf öffnen</string>
 
     <!-- Pairing -->
     <string name="pairing_title">Gerät koppeln</string>
@@ -36,6 +38,8 @@
     <string name="pairing_error_prefix">Token muss mit %1$s beginnen</string>
     <string name="pairing_error_invalid">Token ungültig oder widerrufen.</string>
     <string name="pairing_error_unreachable">Server nicht erreichbar: %1$s</string>
+    <string name="pairing_token_show">Token anzeigen</string>
+    <string name="pairing_token_hide">Token verbergen</string>
 
     <!-- Books -->
     <string name="books_title">Bücher</string>
@@ -43,6 +47,10 @@
     <string name="books_empty">Keine Bücher gefunden.</string>
     <string name="books_empty_hint">Zum Aktualisieren nach unten ziehen.</string>
     <string name="books_load_error">Bücher konnten nicht geladen werden: %1$s</string>
+    <string name="books_not_loaded">Bücher konnten nicht geladen werden.</string>
+    <string name="role_editor">Editor</string>
+    <string name="role_lektor">Lektor</string>
+    <string name="role_viewer">Leser</string>
 
     <!-- Settings -->
     <string name="settings_title">Einstellungen</string>
@@ -55,8 +63,6 @@
     <string name="settings_stt_unknown">unbekannt</string>
     <string name="settings_version">Version</string>
     <string name="settings_check_update">Auf Updates prüfen</string>
-    <string name="settings_checking_update">Wird geprüft…</string>
-    <string name="settings_up_to_date">Du verwendest bereits die neueste Version.</string>
 
     <!-- Settings: Sektionen -->
     <string name="settings_section_appearance">Darstellung</string>
@@ -90,6 +96,10 @@
     <string name="settings_spellcheck_hint">Rechtschreibung, Grammatik und Stil im Editor über LanguageTool prüfen</string>
     <string name="settings_spellcheck_unavailable">Auf diesem Server nicht aktiviert</string>
 
+    <!-- Settings: Wisch-Geste in der Abschnittsliste -->
+    <string name="settings_swipe_history">Wischen öffnet Verlauf</string>
+    <string name="settings_swipe_history_hint">Abschnitt in der Liste weit nach links wischen, um den Verlauf zu öffnen</string>
+
     <!-- Editor: Rechtschreib-UI in der WebView (Badge/Popover des Editor-Bundles).
          Die Schlüssel entsprechen den i18n-Keys des Spellcheck-Controllers;
          „{n}" wird vom Controller durch die Trefferzahl ersetzt. -->
@@ -113,6 +123,14 @@
     <string name="settings_signout_confirm_title">Gerät abmelden?</string>
     <string name="settings_signout_confirm_message">Das lokale Token wird von diesem Gerät entfernt. Noch nicht synchronisierte Änderungen können verloren gehen. Fortfahren?</string>
     <string name="settings_signout_confirm">Abmelden</string>
+    <plurals name="settings_signout_pending">
+        <item quantity="one">%d Änderung noch nicht synchronisiert</item>
+        <item quantity="other">%d Änderungen noch nicht synchronisiert</item>
+    </plurals>
+    <string name="settings_signout_sync_first">Erst synchronisieren</string>
+    <string name="settings_version_current">%1$s – aktuell</string>
+    <string name="settings_version_checking">%1$s – wird geprüft…</string>
+    <string name="settings_version_update_error">%1$s – Update-Prüfung fehlgeschlagen: %2$s</string>
     <string name="action_cancel">Abbrechen</string>
 
     <!-- Update-Dialog -->
@@ -128,6 +146,7 @@
     <string name="update_install">Installieren</string>
     <string name="update_error_incomplete">Download unvollständig — bitte erneut versuchen.</string>
     <string name="update_error_signature">Signatur der heruntergeladenen App stimmt nicht überein. Installation abgebrochen.</string>
+    <string name="update_error_download">Download fehlgeschlagen.</string>
     <string name="action_close">Schliessen</string>
     <string name="action_retry">Erneut versuchen</string>
 
@@ -136,6 +155,8 @@
     <string name="tree_page_updated">Zuletzt geändert: %1$s</string>
     <string name="tree_page_updated_unknown">Noch nicht synchronisiert</string>
     <string name="tree_load_error">Fehler beim Laden: %1$s</string>
+    <string name="tree_empty">Dieses Buch hat noch keine Abschnitte.</string>
+    <string name="tree_cached_hint">Zuletzt geladener Stand. %1$s</string>
     <string name="history_title">Verlauf</string>
     <string name="history_empty">Noch keine früheren Versionen vorhanden.</string>
     <string name="history_load_error">Fehler beim Laden des Verlaufs: %1$s</string>
@@ -158,6 +179,10 @@
     <string name="history_show_changes">Änderungen</string>
     <string name="history_show_changes_desc">Änderungen gegenüber der vorherigen Version zeigen</string>
     <string name="history_no_changes">Keine Textänderung gegenüber der vorherigen Version (nur Formatierung o.Ä.).</string>
+    <string name="history_restore_unsynced_title">Nicht synchronisierte Änderungen gehen verloren</string>
+    <string name="history_restore_unsynced_message">Die lokalen Änderungen an diesem Abschnitt konnten nicht zum Server übertragen werden (offline, Konflikt oder gesperrt). Beim Wiederherstellen werden sie verworfen.</string>
+    <string name="history_restore_anyway">Trotzdem wiederherstellen</string>
+    <string name="history_restore_offline">Wiederherstellen ist nur online möglich.</string>
 
     <!-- Tagebuch / Kalender -->
     <string name="calendar_show">Kalender anzeigen</string>
@@ -202,6 +227,15 @@
     <string name="editor_msg_server_resolved">Server-Version geladen – lokale Änderung verworfen.</string>
     <string name="editor_msg_local_resolved">Deine Version gespeichert.</string>
     <string name="editor_msg_load_failed">Laden fehlgeschlagen: %1$s</string>
+    <string name="editor_msg_record_failed_plain">Aufnahme fehlgeschlagen.</string>
+    <string name="editor_msg_transcribe_failed">Transkription fehlgeschlagen: %1$s</string>
+    <string name="editor_msg_reloaded">Editor neu geladen.</string>
+    <string name="editor_boot_failed">Der Editor konnte nicht gestartet werden.</string>
+    <string name="editor_conflict_preview_failed">Vorschau nicht verfügbar.</string>
+    <string name="editor_conflict_preview_retry">Erneut laden</string>
+    <string name="editor_conflict_discard_title">Deine Fassung verwerfen?</string>
+    <string name="editor_conflict_discard_message">Der Abschnitt wird durch die Server-Version ersetzt. Deine lokalen Änderungen, die noch nicht auf dem Server sind, gehen dabei verloren.</string>
+    <string name="editor_conflict_discard_confirm">Verwerfen</string>
     <!-- Mikrofon-Berechtigung (Diktat). -->
     <string name="editor_mic_denied">Mikrofon-Berechtigung fehlt. Bitte in den App-Einstellungen erlauben, um zu diktieren.</string>
     <string name="editor_mic_rationale_title">Mikrofon-Zugriff</string>
@@ -232,7 +266,6 @@
     <string name="research_detail_pinned">Angeheftet</string>
     <string name="research_detail_has_image">Bild angehängt</string>
     <string name="research_detail_has_doc">Dokument angehängt: %1$s</string>
-    <string name="research_detail_close">Schliessen</string>
     <!-- Capture-Formular -->
     <string name="research_capture_title">Recherche festhalten</string>
     <string name="research_book_label">Buch</string>
@@ -244,6 +277,10 @@
     <string name="research_saved">Recherche gespeichert.</string>
     <string name="research_save_error">Speichern fehlgeschlagen: %1$s</string>
     <string name="research_capture_hint">Wird im Recherche-Board des gewählten Buchs abgelegt (online).</string>
+    <string name="research_books_unavailable">Keine Bücher verfügbar – die Buchliste konnte nicht geladen werden.</string>
+    <string name="research_discard_title">Eingaben verwerfen?</string>
+    <string name="research_discard_confirm">Verwerfen</string>
+    <string name="research_open_failed">Link konnte nicht geöffnet werden.</string>
 
     <!-- Sync-Status (Offline-/Queue-Banner) -->
     <string name="sync_offline">Offline – Änderungen werden lokal gespeichert</string>
@@ -255,4 +292,12 @@
         <item quantity="one">%d Änderung wird synchronisiert…</item>
         <item quantity="other">%d Änderungen werden synchronisiert…</item>
     </plurals>
+    <!-- Fehlerkategorien (ui/components/UiError.kt) -->
+    <string name="error_offline">Keine Verbindung zum Server.</string>
+    <string name="error_locked">Der Abschnitt ist gerade gesperrt.</string>
+    <string name="error_not_found">Nicht gefunden – wurde es auf dem Server gelöscht?</string>
+    <string name="error_unauthorized">Keine Berechtigung.</string>
+    <string name="error_bad_response">Unerwartete Antwort vom Server.</string>
+    <string name="error_server">Serverfehler (HTTP %1$d).</string>
+    <string name="error_unknown">Unerwarteter Fehler (%1$s).</string>
 </resources>

@@ -69,7 +69,8 @@ fun UpdateDialog(
                     )
                 }
             },
-            confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.update_later)) } },
+            // dismiss() bricht den laufenden Download ab — darum «Abbrechen», nicht «Später».
+            confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
         )
 
         is UpdateState.NeedsInstallPermission -> AlertDialog(

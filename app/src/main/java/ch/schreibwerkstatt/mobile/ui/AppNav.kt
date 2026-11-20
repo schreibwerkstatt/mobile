@@ -6,12 +6,19 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -61,11 +68,15 @@ fun AppNav(
     val navController = rememberNavController()
     val isPaired by locator.tokenStore.isPaired.collectAsStateWithLifecycle()
 
-    val start = if (isPaired) Routes.BOOKS else Routes.PAIRING
+    // Start-Ziel nur einmal festlegen: ein Wechsel von isPaired darf den NavHost-Graphen
+    // nicht neu aufbauen (Backstack/ViewModels gingen verloren). Pairing → Bücher läuft
+    // über die onPaired-Navigation, Token-Verlust über den Effekt unten.
+    val start = remember { if (isPaired) Routes.BOOKS else Routes.PAIRING }
 
     // Token-Verlust (401 / Abmelden) → zurück zum Pairing, Backstack leeren.
     LaunchedEffect(isPaired) {
         if (!isPaired) {
+            if (navController.currentDestination?.route == Routes.PAIRING) return@LaunchedEffect
             navController.navigate(Routes.PAIRING) {
                 popUpTo(0) { inclusive = true }
                 launchSingleTop = true
@@ -93,6 +104,8 @@ fun AppNav(
     NavHost(
         navController = navController,
         startDestination = start,
+        // Eigener Hintergrund, damit während der Übergänge (Fade) kein Window-Grund durchscheint.
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
         enterTransition = {
             slideInHorizontally(tween(slideDuration)) { slidePx } + fadeIn(tween(slideDuration))
         },
@@ -109,15 +122,16 @@ fun AppNav(
         composable(Routes.PAIRING) {
             PairingScreen(onPaired = {
                 navController.navigate(Routes.BOOKS) {
-                    popUpTo(Routes.PAIRING) { inclusive = true }
+                    popUpTo(0) { inclusive = true }
+                    launchSingleTop = true
                 }
             })
         }
 
-        composable(Routes.BOOKS) {
+        composable(Routes.BOOKS) { entry ->
             BooksScreen(
-                onOpenBook = { book -> navController.navigate(Routes.tree(book.id, book.name)) },
-                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                onOpenBook = { book -> entry.ifResumed { navController.navigate(Routes.tree(book.id, book.name)) } },
+                onOpenSettings = { entry.ifResumed { navController.navigate(Routes.SETTINGS) } },
             )
         }
 
@@ -133,14 +147,14 @@ fun AppNav(
             TreeScreen(
                 bookId = bookId,
                 bookTitle = title,
-                onBack = { navController.popBackStack() },
+                onBack = { entry.ifResumed { navController.navigateUp() } },
                 onOpenPage = { pageId, pageName ->
-                    navController.navigate(Routes.editor(bookId, pageId, pageName))
+                    entry.ifResumed { navController.navigate(Routes.editor(bookId, pageId, pageName)) }
                 },
                 onOpenHistory = { pageId, pageName ->
-                    navController.navigate(Routes.history(bookId, pageId, pageName))
+                    entry.ifResumed { navController.navigate(Routes.history(bookId, pageId, pageName)) }
                 },
-                onOpenResearch = { navController.navigate(Routes.research(bookId, title)) },
+                onOpenResearch = { entry.ifResumed { navController.navigate(Routes.research(bookId, title)) } },
             )
         }
 
@@ -159,12 +173,20 @@ fun AppNav(
                 bookId = bookId,
                 pageId = pageId,
                 pageTitle = title.ifBlank { stringResource(R.string.editor_page_fallback_title) },
-                onBack = { navController.popBackStack() },
+                onBack = { entry.ifResumed { navController.navigateUp() } },
                 onOpenHistory = { historyPageId, pageName ->
-                    navController.navigate(Routes.history(bookId, historyPageId, pageName))
+                    entry.ifResumed { navController.navigate(Routes.history(bookId, historyPageId, pageName)) }
                 },
+                // Wisch zum Nachbar-Abschnitt ersetzt den aktuellen Editor statt ihn zu
+                // stapeln — sonst führt Zurück durch jeden durchgeblätterten Abschnitt.
+                // Der Schliess-Save des alten Editors läuft wie bei Zurück im onDispose
+                // (applicationScope).
                 onNavigateToPage = { targetPageId, pageName ->
-                    navController.navigate(Routes.editor(bookId, targetPageId, pageName))
+                    entry.ifResumed {
+                        navController.navigate(Routes.editor(bookId, targetPageId, pageName)) {
+                            popUpTo(Routes.EDITOR) { inclusive = true }
+                        }
+                    }
                 },
             )
         }
@@ -184,8 +206,10 @@ fun AppNav(
                 bookId = bookId,
                 pageId = pageId,
                 pageTitle = title,
-                onBack = { navController.popBackStack() },
-                onRestored = { restoredPageId ->
+                onBack = { entry.ifResumed { navController.navigateUp() } },
+                // Ergebnis eines Netzwerk-Aufrufs, kein Klick: nur prüfen, dass der Verlauf
+                // noch oben liegt (RESUMED wäre zu streng, wenn die App kurz im Hintergrund war).
+                onRestored = { restoredPageId -> if (navController.currentBackStackEntry == entry) {
                     navController.popBackStack()
                     // Kam der Verlauf aus dem Editor derselben Seite, diesen alten Eintrag
                     // ebenfalls entfernen — sonst liegt die Seite doppelt im Backstack und
@@ -198,13 +222,13 @@ fun AppNav(
                         navController.popBackStack()
                     }
                     navController.navigate(Routes.editor(bookId, restoredPageId, title))
-                },
+                } },
             )
         }
 
-        composable(Routes.SETTINGS) {
+        composable(Routes.SETTINGS) { entry ->
             SettingsScreen(
-                onBack = { navController.popBackStack() },
+                onBack = { entry.ifResumed { navController.navigateUp() } },
                 onSignedOut = { /* isPaired-LaunchedEffect navigiert automatisch */ },
             )
         }
@@ -221,8 +245,8 @@ fun AppNav(
             ResearchListScreen(
                 bookId = bookId,
                 bookTitle = title,
-                onBack = { navController.popBackStack() },
-                onAdd = { addBookId -> navController.navigate(Routes.researchCapture(addBookId)) },
+                onBack = { entry.ifResumed { navController.navigateUp() } },
+                onAdd = { addBookId -> entry.ifResumed { navController.navigate(Routes.researchCapture(addBookId)) } },
             )
         }
 
@@ -238,15 +262,18 @@ fun AppNav(
             ResearchCaptureScreen(
                 shared = payload,
                 preselectBookId = preselect,
-                onDone = {
+                // Auch nach dem (asynchronen) Speichern: nur den eigenen Eintrag schliessen.
+                onDone = { if (navController.currentBackStackEntry == entry) {
                     onSharedConsumed()
-                    if (!navController.popBackStack()) {
+                    if (navController.previousBackStackEntry != null) {
+                        navController.popBackStack()
+                    } else {
                         // Share-Kaltstart: kein Backstack → auf die Bücher-Liste.
                         navController.navigate(Routes.BOOKS) {
                             popUpTo(0) { inclusive = true }
                         }
                     }
-                },
+                } },
             )
         }
     }
@@ -257,6 +284,15 @@ fun AppNav(
     if (BuildConfig.SELF_UPDATE) {
         UpdateHost(locator)
     }
+}
+
+/**
+ * Führt [block] nur aus, solange dieser Eintrag RESUMED ist. Fängt Doppel-Taps und
+ * Klicks während einer laufenden Übergangs-Animation ab, die sonst doppelt
+ * navigieren bzw. mehr als einen Eintrag poppen (bis hin zum leeren Backstack).
+ */
+private inline fun NavBackStackEntry.ifResumed(block: () -> Unit) {
+    if (lifecycle.currentState == Lifecycle.State.RESUMED) block()
 }
 
 /** Sammelt den Update-State und zeigt den Dialog. Nur aus dem github-Flavor erreichbar. */

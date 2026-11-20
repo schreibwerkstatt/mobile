@@ -62,6 +62,12 @@ import ch.schreibwerkstatt.mobile.R
 import ch.schreibwerkstatt.mobile.data.net.dto.RevisionDto
 import ch.schreibwerkstatt.mobile.locator
 import ch.schreibwerkstatt.mobile.ui.components.SkeletonList
+import ch.schreibwerkstatt.mobile.ui.components.UiError
+import ch.schreibwerkstatt.mobile.ui.components.formatServerTime
+import ch.schreibwerkstatt.mobile.ui.components.message
+import ch.schreibwerkstatt.mobile.ui.components.text
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.text.style.TextOverflow
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -82,11 +88,21 @@ fun HistoryScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
+    val online by context.locator.syncCoordinator.online.collectAsStateWithLifecycle()
+
     val errorTemplate = stringResource(R.string.history_action_error)
     LaunchedEffect(state.message) {
         state.message?.let {
-            snackbarHostState.showSnackbar(errorTemplate.format(it))
+            snackbarHostState.showSnackbar(errorTemplate.format(it.message(context.resources)))
             vm.consumeMessage()
+        }
+    }
+    // Restore-Erfolg als State-Ereignis (nicht als Lambda ins viewModelScope), damit
+    // die Navigation nie einen veralteten Callback/Screen trifft.
+    LaunchedEffect(state.restoredPageId) {
+        state.restoredPageId?.let {
+            vm.consumeRestored()
+            onRestored(it)
         }
     }
 
@@ -129,7 +145,7 @@ fun HistoryScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Text(
-                            stringResource(R.string.history_load_error, state.error ?: ""),
+                            stringResource(R.string.history_load_error, state.error?.text().orEmpty()),
                             color = MaterialTheme.colorScheme.error,
                             textAlign = TextAlign.Center,
                         )
@@ -176,9 +192,29 @@ fun HistoryScreen(
         RevisionPreviewDialog(
             preview = preview,
             restoring = state.restoring,
+            online = online,
+            error = state.previewError,
+            onDismissError = vm::consumePreviewError,
             onClose = vm::closePreview,
             onToggleDiff = vm::toggleDiff,
-            onRestore = { vm.restore(preview.revision.id, onRestored) },
+            onRestore = { vm.restore(preview.revision.id) },
+        )
+    }
+
+    // Flush vor dem Restore gescheitert: lokale Änderungen würden verworfen.
+    if (state.discardWarningRevId != null) {
+        AlertDialog(
+            onDismissRequest = vm::dismissDiscardWarning,
+            title = { Text(stringResource(R.string.history_restore_unsynced_title)) },
+            text = { Text(stringResource(R.string.history_restore_unsynced_message)) },
+            confirmButton = {
+                TextButton(onClick = vm::confirmDiscardAndRestore) {
+                    Text(stringResource(R.string.history_restore_anyway))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = vm::dismissDiscardWarning) { Text(stringResource(R.string.action_cancel)) }
+            },
         )
     }
 }
@@ -199,7 +235,9 @@ private fun RevisionRow(rev: RevisionDto, onClick: () -> Unit) {
         rev.words?.let { append(" · ").append(stringResource(R.string.history_words, it)) }
     }
     ListItem(
-        headlineContent = { Text(title ?: formatRevisionTime(rev.created_at), maxLines = 1) },
+        headlineContent = {
+            Text(title ?: formatRevisionTime(rev.created_at), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        },
         supportingContent = {
             Text(
                 meta,
@@ -222,19 +260,30 @@ private fun RevisionRow(rev: RevisionDto, onClick: () -> Unit) {
 private fun RevisionPreviewDialog(
     preview: RevisionPreview,
     restoring: Boolean,
+    online: Boolean,
+    error: UiError?,
+    onDismissError: () -> Unit,
     onClose: () -> Unit,
     onToggleDiff: () -> Unit,
     onRestore: () -> Unit,
 ) {
     var confirm by remember { mutableStateOf(false) }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    // Während des Restores nicht schliessbar: das Ergebnis (Fehler/Warnung) gehört hierher.
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = !restoring,
+            dismissOnClickOutside = !restoring,
+        ),
+    ) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
             Column(Modifier.fillMaxSize()) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = onClose) {
+                    IconButton(onClick = onClose, enabled = !restoring) {
                         Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.action_close))
                     }
                     val client = preview.revision.client?.takeIf { it.isNotBlank() }
@@ -266,11 +315,42 @@ private fun RevisionPreviewDialog(
                                 .semantics { contentDescription = desc },
                         )
                     }
-                    Button(onClick = { confirm = true }, enabled = !restoring && !preview.loadingHtml) {
+                    // Restore braucht den Server (und vorher den Flush) — offline gesperrt.
+                    Button(onClick = { confirm = true }, enabled = online && !restoring && !preview.loadingHtml) {
                         Text(stringResource(R.string.history_restore))
                     }
                 }
                 HorizontalDivider()
+                // Fehler direkt im Dialog: die Snackbar des Screens läge dahinter.
+                if (error != null) {
+                    Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            Modifier.padding(start = 16.dp, end = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                stringResource(R.string.history_action_error, error.text()),
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+                            )
+                            IconButton(onClick = onDismissError) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = stringResource(R.string.action_close),
+                                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                                )
+                            }
+                        }
+                    }
+                } else if (!online) {
+                    Text(
+                        stringResource(R.string.history_restore_offline),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    )
+                }
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     when {
                         preview.loadingHtml -> CircularProgressIndicator()
@@ -314,8 +394,10 @@ private fun RevisionPreviewDialog(
 @Composable
 private fun RevisionWebView(html: String, modifier: Modifier = Modifier) {
     val dark = LocalAppDarkTheme.current
-    val bg = if (dark) "#1A1F3A" else "#FAF7F2"
-    val fg = if (dark) "#E8E8F0" else "#1A1A1A"
+    // Hinter-/Vordergrund aus dem Theme statt hartcodiert (folgt Hell/Dunkel und Dynamic Color).
+    val bgArgb = MaterialTheme.colorScheme.surface.toArgb()
+    val bg = cssColor(bgArgb)
+    val fg = cssColor(MaterialTheme.colorScheme.onSurface.toArgb())
     val doc = """
         <!DOCTYPE html><html><head>
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -337,7 +419,6 @@ private fun RevisionWebView(html: String, modifier: Modifier = Modifier) {
                 settings.javaScriptEnabled = false
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
-                setBackgroundColor(if (dark) 0xFF1A1F3A.toInt() else 0xFFFAF7F2.toInt())
                 // Links im Revisions-HTML nicht in dieser read-only-WebView öffnen,
                 // sondern extern (System-Browser); Navigation der WebView selbst blocken.
                 webViewClient = object : WebViewClient() {
@@ -357,9 +438,16 @@ private fun RevisionWebView(html: String, modifier: Modifier = Modifier) {
                 }
             }
         },
-        update = { it.loadDataWithBaseURL(null, doc, "text/html", "utf-8", null) },
+        update = {
+            // Im update-Block, damit ein Theme-Wechsel auch eine bestehende WebView umfärbt.
+            it.setBackgroundColor(bgArgb)
+            it.loadDataWithBaseURL(null, doc, "text/html", "utf-8", null)
+        },
     )
 }
+
+/** ARGB → CSS-`#RRGGBB` (Alpha ignoriert; Theme-Flächen sind opak). */
+private fun cssColor(argb: Int): String = String.format("#%06X", argb and 0xFFFFFF)
 
 @Composable
 private fun sourceLabel(source: String?): String = when (source) {
@@ -375,23 +463,5 @@ private fun sourceLabel(source: String?): String = when (source) {
     else -> source ?: stringResource(R.string.history_source_unknown)
 }
 
-private val revisionTimeFormatter: DateTimeFormatter =
-    DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
-        .withLocale(Locale.getDefault())
-        .withZone(ZoneId.systemDefault())
-
-/**
- * Server-`created_at` ist UTC ohne Zeitzonen-Suffix (`YYYY-MM-DD HH:MM:SS`,
- * via SQLite `datetime('now')`). Robust parsen: ISO-Instant ODER „SQLite-UTC".
- */
-private fun formatRevisionTime(raw: String?): String {
-    if (raw.isNullOrBlank()) return "—"
-    val instant = runCatching { Instant.parse(raw) }.getOrNull()
-        ?: runCatching {
-            java.time.LocalDateTime
-                .parse(raw.replace(' ', 'T'))
-                .atZone(ZoneId.of("UTC"))
-                .toInstant()
-        }.getOrNull()
-    return instant?.let { revisionTimeFormatter.format(it) } ?: raw
-}
+/** Server-`created_at` lokalisiert (geteilt mit der Recherche, siehe [formatServerTime]). */
+private fun formatRevisionTime(raw: String?): String = formatServerTime(raw)

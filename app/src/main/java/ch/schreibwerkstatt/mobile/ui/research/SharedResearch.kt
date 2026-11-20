@@ -60,3 +60,17 @@ fun parseShareIntent(intent: Intent?): SharedResearch? {
     }
     return SharedResearch(url = url, title = title, note = note)
 }
+
+private val SCHEME = Regex("""^[A-Za-z][A-Za-z0-9+.-]*://""")
+
+/**
+ * Link für Speichern/Öffnen normalisieren: Ohne Schema (`example.org/x`) behandelt
+ * Android die Eingabe nicht als Web-Adresse — dann `https://` voranstellen.
+ * `mailto:`/`tel:` und Adressen mit Schema bleiben unverändert, leer bleibt leer.
+ */
+fun normalizeResearchUrl(raw: String): String {
+    val t = raw.trim()
+    if (t.isEmpty()) return t
+    if (SCHEME.containsMatchIn(t) || t.startsWith("mailto:", true) || t.startsWith("tel:", true)) return t
+    return "https://$t"
+}

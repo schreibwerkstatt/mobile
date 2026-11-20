@@ -169,3 +169,16 @@ interface PendingWriteDao {
     @Query("DELETE FROM pending_writes WHERE pageId = :pageId")
     suspend fun deleteAllForPage(pageId: Long)
 }
+
+@Dao
+interface TreeCacheDao {
+    @Query("SELECT * FROM tree_cache WHERE bookId = :bookId")
+    suspend fun byBook(bookId: Long): TreeCacheEntity?
+
+    @Upsert
+    suspend fun upsert(entry: TreeCacheEntity)
+
+    /** Gliederungen von Büchern entfernen, die der Server nicht mehr liefert. */
+    @Query("DELETE FROM tree_cache WHERE bookId NOT IN (:keepIds)")
+    suspend fun deleteMissing(keepIds: List<Long>)
+}

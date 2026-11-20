@@ -33,6 +33,15 @@ class SettingsStore(private val context: Context) {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val BACKGROUND_SYNC = booleanPreferencesKey("background_sync")
         val SPELLCHECK = booleanPreferencesKey("spellcheck")
+        val SWIPE_TO_HISTORY = booleanPreferencesKey("swipe_to_history")
+    }
+
+    /** Wischen nach links auf einer Abschnittszeile öffnet den Verlauf. Default: aktiviert. */
+    val swipeToHistory: Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.SWIPE_TO_HISTORY] ?: true }
+
+    suspend fun setSwipeToHistory(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.SWIPE_TO_HISTORY] = enabled }
     }
 
     val serverBaseUrl: Flow<String?> =

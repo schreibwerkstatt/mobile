@@ -1,5 +1,6 @@
 package ch.schreibwerkstatt.mobile.ui.tree
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -7,7 +8,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -18,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.CalendarMonth
@@ -35,6 +39,9 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.material3.SwipeToDismissBoxState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -46,19 +53,26 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.core.os.ConfigurationCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ch.schreibwerkstatt.mobile.R
@@ -66,6 +80,7 @@ import ch.schreibwerkstatt.mobile.locator
 import ch.schreibwerkstatt.mobile.ui.components.SearchField
 import ch.schreibwerkstatt.mobile.ui.components.SkeletonList
 import ch.schreibwerkstatt.mobile.ui.components.SyncStatusBar
+import ch.schreibwerkstatt.mobile.ui.components.text
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -88,6 +103,8 @@ fun TreeScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     val online by coordinator.online.collectAsStateWithLifecycle()
     val pendingCount by coordinator.pendingCount.collectAsStateWithLifecycle()
+    val swipeToHistory by remember(context) { context.locator.settings.swipeToHistory }
+        .collectAsStateWithLifecycle(initialValue = true)
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior()
     var query by rememberSaveable { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -95,6 +112,15 @@ fun TreeScreen(
     val calendar = state.isDiary && state.calendarMode
     val q = query.trim()
     val searchActive = q.isNotEmpty()
+
+    // Zurück leert zuerst die Suche, statt den Screen zu verlassen.
+    BackHandler(enabled = query.isNotEmpty()) { query = "" }
+
+    // Öffnen-Ereignisse des ViewModels (Tagebuch-Eintrag geöffnet/angelegt).
+    val currentOnOpenPage by rememberUpdatedState(onOpenPage)
+    LaunchedEffect(vm) {
+        vm.openPage.collect { currentOnOpenPage(it.pageId, it.pageName) }
+    }
 
     // Inhalts-Volltextsuche (Room-FTS) anstossen; Titel-Filterung bleibt sofort im UI.
     LaunchedEffect(q) { vm.search(q) }
@@ -120,14 +146,20 @@ fun TreeScreen(
         }
     }
 
-    // Einmalige Fehlermeldung (z.B. Eintrag konnte nicht angelegt werden).
-    val createError = stringResource(R.string.calendar_create_error)
+    // Einmalige Meldung: Eintrag nicht angelegt, oder Neuladen fehlgeschlagen und es
+    // bleibt beim zuletzt geladenen Stand (Inhalt bleibt sichtbar, kein Vollbild-Fehler).
+    val messageText = when (val m = state.message) {
+        is TreeMessage.CreateFailed -> stringResource(R.string.calendar_create_error)
+        is TreeMessage.StaleTree -> stringResource(R.string.tree_cached_hint, m.error.text())
+        null -> null
+    }
     LaunchedEffect(state.message) {
-        if (state.message != null) {
-            snackbarHostState.showSnackbar(createError)
+        if (messageText != null) {
+            snackbarHostState.showSnackbar(messageText)
             vm.consumeMessage()
         }
     }
+    val errorText = state.error?.text()
 
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -135,7 +167,7 @@ fun TreeScreen(
         topBar = {
             Column(Modifier.background(MaterialTheme.colorScheme.surface)) {
                 TopAppBar(
-                    title = { Text(bookTitle) },
+                    title = { Text(bookTitle, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
@@ -190,7 +222,7 @@ fun TreeScreen(
                     entries = state.diaryEntries,
                     creating = state.creatingEntry,
                     loading = state.loading,
-                    error = state.error,
+                    error = errorText,
                     onRetry = { vm.load() },
                     onPrevMonth = { vm.stepMonth(-1) },
                     onNextMonth = { vm.stepMonth(1) },
@@ -198,12 +230,12 @@ fun TreeScreen(
                     // liefe sonst in den Anlege-Pfad. Bekannte (gecachte) Einträge öffnen geht.
                     onDayClick = { dateIso ->
                         if (!state.loading || dateIso in state.diaryEntries) {
-                            vm.openOrCreateEntry(dateIso, onOpenPage)
+                            vm.openOrCreateEntry(dateIso)
                         }
                     },
                     onTodayClick = {
                         val todayIso = java.time.LocalDate.now().toString()
-                        if (!state.loading || todayIso in state.diaryEntries) vm.openOrCreateEntry(todayIso, onOpenPage)
+                        if (!state.loading || todayIso in state.diaryEntries) vm.openOrCreateEntry(todayIso)
                     },
                 )
             }
@@ -219,43 +251,30 @@ fun TreeScreen(
                     state.loading && state.rows.isEmpty() ->
                         SkeletonList(Modifier.fillMaxSize())
 
-                    state.error != null && state.rows.isEmpty() -> Box(
-                        Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Icon(
-                                Icons.Filled.ErrorOutline,
-                                contentDescription = null,
-                                modifier = Modifier.size(48.dp),
-                                tint = MaterialTheme.colorScheme.error,
-                            )
-                            Text(
-                                stringResource(R.string.tree_load_error, state.error ?: ""),
-                                color = MaterialTheme.colorScheme.error,
-                                textAlign = TextAlign.Center,
-                            )
-                            Button(onClick = { vm.load() }) {
-                                Text(stringResource(R.string.action_retry))
-                            }
-                        }
-                    }
+                    state.error != null && state.rows.isEmpty() -> CenteredState(
+                        icon = Icons.Filled.ErrorOutline,
+                        text = stringResource(R.string.tree_load_error, errorText.orEmpty()),
+                        isError = true,
+                        onRetry = { vm.load() },
+                    )
 
-                    searchActive && searchHits.isEmpty() -> Box(
-                        Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            stringResource(R.string.search_no_results, q),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
+                    // Leeres Buch: geladen, ohne Fehler, aber ohne Kapitel/Abschnitte.
+                    !state.loading && state.rows.isEmpty() -> CenteredState(
+                        icon = Icons.AutoMirrored.Filled.MenuBook,
+                        text = stringResource(R.string.tree_empty),
+                    )
+
+                    searchActive && searchHits.isEmpty() -> CenteredState(
+                        text = stringResource(R.string.search_no_results, q),
+                    )
 
                     // Suche aktiv: flache Trefferliste (Titel + Inhalt) mit Snippet.
-                    searchActive -> LazyColumn(Modifier.fillMaxSize()) {
+                    searchActive -> LazyColumn(
+                        Modifier
+                            .fillMaxSize()
+                            .consumeWindowInsets(padding)
+                            .imePadding(),
+                    ) {
                         items(searchHits, key = { "p${it.id}" }) { hit ->
                             SwipeablePageRow(
                                 row = TreeRow.Page(hit.id, hit.name, depth = 0),
@@ -264,6 +283,7 @@ fun TreeScreen(
                                 snippet = hit.snippet,
                                 onOpenPage = onOpenPage,
                                 onOpenHistory = onOpenHistory,
+                                swipeEnabled = swipeToHistory,
                             )
                         }
                     }
@@ -284,6 +304,7 @@ fun TreeScreen(
                                     updatedIso = state.pageUpdatedAt[row.id],
                                     onOpenPage = onOpenPage,
                                     onOpenHistory = onOpenHistory,
+                                    swipeEnabled = swipeToHistory,
                                 )
                             }
                         }
@@ -293,6 +314,9 @@ fun TreeScreen(
         }
     }
 }
+
+/** Anteil der Zeilenbreite, der für „Verlauf öffnen" gezogen werden muss. */
+private const val HISTORY_SWIPE_FRACTION = 0.45f
 
 /** Ein Suchtreffer (Titel- oder Inhaltstreffer) als flache Zeile mit optionalem Snippet. */
 private data class SearchHit(val id: Long, val name: String, val snippet: String?)
@@ -307,6 +331,13 @@ private fun rowKey(row: TreeRow, index: Int): String = when (row) {
  * Seitenzeile mit Wisch-Geste: nach links wischen legt die „Verlauf"-Aktion frei
  * und öffnet die Versionshistorie der Seite. Es wird nie wirklich „dismissed" –
  * nach Auslösen schnappt die Zeile zurück (Reveal-Aktion, kein Löschen).
+ *
+ * Die Geste löst bewusst schwer aus: erst ab [HISTORY_SWIPE_FRACTION] der Zeilenbreite,
+ * und ein schneller kurzer Wisch allein genügt nicht (der Velocity-Pfad des
+ * Material-`SwipeToDismissBox` wird über die tatsächlich gezogene Strecke abgefangen),
+ * damit ein schräges Scrollen nicht im Verlauf landet. Über das Settings-Flag
+ * `swipeToHistory` ([swipeEnabled]) ist sie ganz abschaltbar; der Verlauf bleibt
+ * dann über den Editor erreichbar.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -316,19 +347,36 @@ private fun SwipeablePageRow(
     updatedIso: String?,
     onOpenPage: (pageId: Long, pageName: String) -> Unit,
     onOpenHistory: (pageId: Long, pageName: String) -> Unit,
+    swipeEnabled: Boolean,
     /** Markup-freier Treffer-Snippet (nur im Suchmodus); ersetzt dann die „zuletzt geändert"-Zeile. */
     snippet: String? = null,
 ) {
+    var rowWidthPx by remember { mutableFloatStateOf(0f) }
+    // confirmValueChange wird nur einmal gemerkt — aktuelle Zeile/Callback darum über
+    // rememberUpdatedState lesen (die Zeile kann bei gleichem Key neu benannt werden).
+    val currentRow by rememberUpdatedState(row)
+    val currentOnOpenHistory by rememberUpdatedState(onOpenHistory)
+    // confirmValueChange braucht den eigenen State (Offset), der erst danach existiert.
+    val stateRef = remember { arrayOfNulls<SwipeToDismissBoxState>(1) }
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
-            if (value == SwipeToDismissBoxValue.EndToStart) onOpenHistory(row.id, row.name)
+            if (value == SwipeToDismissBoxValue.EndToStart) {
+                val dragged = stateRef[0]?.let { runCatching { -it.requireOffset() }.getOrNull() } ?: 0f
+                if (rowWidthPx > 0f && dragged >= rowWidthPx * HISTORY_SWIPE_FRACTION) {
+                    currentOnOpenHistory(currentRow.id, currentRow.name)
+                }
+            }
             false
         },
+        positionalThreshold = { total -> total * HISTORY_SWIPE_FRACTION },
     )
+    stateRef[0] = dismissState
     SwipeToDismissBox(
         state = dismissState,
+        modifier = Modifier.onSizeChanged { rowWidthPx = it.width.toFloat() },
         enableDismissFromStartToEnd = false,
-        enableDismissFromEndToStart = true,
+        enableDismissFromEndToStart = swipeEnabled,
+        gesturesEnabled = swipeEnabled,
         backgroundContent = {
             Row(
                 Modifier
@@ -353,7 +401,8 @@ private fun SwipeablePageRow(
         },
     ) {
         val snip = snippet?.takeIf { it.isNotBlank() }
-        val updated = formatUpdatedAt(updatedIso)
+        val updated = formatUpdatedAt(updatedIso, rememberUpdatedAtFormatter())
+        val historyLabel = stringResource(R.string.a11y_action_open_history)
         ListItem(
             headlineContent = { Text(row.name) },
             supportingContent = {
@@ -375,16 +424,82 @@ private fun SwipeablePageRow(
                 .clickable(
                     onClickLabel = stringResource(R.string.a11y_action_open),
                     role = Role.Button,
-                ) { onOpenPage(row.id, row.name) },
+                ) { onOpenPage(row.id, row.name) }
+                // TalkBack hat keine Wisch-Geste: Verlauf als eigene Aktion anbieten.
+                .semantics {
+                    customActions = listOf(
+                        CustomAccessibilityAction(historyLabel) {
+                            onOpenHistory(row.id, row.name)
+                            true
+                        }
+                    )
+                },
         )
     }
 }
 
-/** Lokalisiertes Anzeigedatum aus dem ISO-8601-`updated_at` des Servers; null = unbekannt/unparsebar. */
-private val updatedAtFormatter: DateTimeFormatter =
-    DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
-        .withLocale(Locale.getDefault())
-        .withZone(ZoneId.systemDefault())
+/**
+ * Formatter für „zuletzt geändert", an die aktuelle Konfiguration gebunden: ein
+ * Sprachwechsel zur Laufzeit (App-Sprache/System) baut ihn neu, statt die Locale
+ * des Prozessstarts einzufrieren.
+ */
+@Composable
+private fun rememberUpdatedAtFormatter(): DateTimeFormatter {
+    val configuration = LocalConfiguration.current
+    return remember(configuration) {
+        val locale = ConfigurationCompat.getLocales(configuration)[0] ?: Locale.getDefault()
+        DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
+            .withLocale(locale)
+            .withZone(ZoneId.systemDefault())
+    }
+}
 
-private fun formatUpdatedAt(iso: String?): String? =
-    iso?.let { runCatching { updatedAtFormatter.format(Instant.parse(it)) }.getOrNull() }
+/** Lokalisiertes Anzeigedatum aus dem ISO-8601-`updated_at` des Servers; null = unbekannt/unparsebar. */
+private fun formatUpdatedAt(iso: String?, formatter: DateTimeFormatter): String? =
+    iso?.let { runCatching { formatter.format(Instant.parse(it)) }.getOrNull() }
+
+/**
+ * Zentrierter Leer-/Fehlerzustand als scrollbare Liste mit einem Eintrag — nur so
+ * nimmt die umgebende PullToRefreshBox die Zieh-Geste an (sie braucht Nested Scroll).
+ */
+@Composable
+private fun CenteredState(
+    text: String,
+    icon: ImageVector? = null,
+    isError: Boolean = false,
+    onRetry: (() -> Unit)? = null,
+) {
+    LazyColumn(Modifier.fillMaxSize()) {
+        item {
+            Box(
+                Modifier.fillParentMaxSize().padding(32.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    if (icon != null) {
+                        Icon(
+                            icon,
+                            contentDescription = null,
+                            modifier = Modifier.size(48.dp),
+                            tint = if (isError) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text(
+                        text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isError) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    if (onRetry != null) {
+                        Button(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
+                    }
+                }
+            }
+        }
+    }
+}

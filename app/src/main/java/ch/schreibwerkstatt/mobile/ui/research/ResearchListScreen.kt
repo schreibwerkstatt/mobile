@@ -1,6 +1,5 @@
 package ch.schreibwerkstatt.mobile.ui.research
 
-import android.content.ActivityNotFoundException
 import android.net.Uri
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.clickable
@@ -65,11 +64,11 @@ import ch.schreibwerkstatt.mobile.R
 import ch.schreibwerkstatt.mobile.data.net.dto.ResearchItemDto
 import ch.schreibwerkstatt.mobile.data.net.dto.ResearchUrlDto
 import ch.schreibwerkstatt.mobile.locator
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.time.format.FormatStyle
-import java.util.Locale
+import ch.schreibwerkstatt.mobile.ui.components.formatServerTime
+import ch.schreibwerkstatt.mobile.ui.components.message
+import androidx.compose.material3.Button
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 
 /**
  * Recherche-Board eines Buchs (Liste). Öffnet Links im Browser (Custom Tab) und
@@ -101,9 +100,14 @@ fun ResearchListScreen(
     val errorTemplate = stringResource(R.string.research_load_error)
     LaunchedEffect(error) {
         error?.let {
-            snackbarHostState.showSnackbar(errorTemplate.format(it))
+            snackbarHostState.showSnackbar(errorTemplate.format(it.message(context.resources)))
             vm.clearError()
         }
+    }
+    val scope = rememberCoroutineScope()
+    val openFailedMsg = stringResource(R.string.research_open_failed)
+    val onOpenUrl: (String) -> Unit = { url ->
+        if (!openUrl(context, url)) scope.launch { snackbarHostState.showSnackbar(openFailedMsg) }
     }
 
     Scaffold(
@@ -131,17 +135,27 @@ fun ResearchListScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
+            // Fehler- und Leerzustand als scrollbare Liste: Pull-to-Refresh reagiert nur
+            // auf scrollbaren Inhalt.
             if (items.isEmpty() && loaded && loadFailed) {
-                Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
-                    Text(
-                        stringResource(R.string.research_load_failed),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error,
-                        textAlign = TextAlign.Center,
-                    )
+                CenteredScrollable {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text(
+                            stringResource(R.string.research_load_failed),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            textAlign = TextAlign.Center,
+                        )
+                        Button(onClick = { vm.refresh() }, enabled = !loading) {
+                            Text(stringResource(R.string.action_retry))
+                        }
+                    }
                 }
             } else if (items.isEmpty() && loaded) {
-                Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                CenteredScrollable {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -182,7 +196,7 @@ fun ResearchListScreen(
     detail?.let { item ->
         ResearchDetailSheet(
             item = item,
-            onOpenUrl = { openUrl(context, it) },
+            onOpenUrl = onOpenUrl,
             onDismiss = { detail = null },
         )
     }
@@ -276,9 +290,9 @@ private fun ResearchDetailSheet(
 
             val meta = listOfNotNull(
                 item.created_at?.takeIf { it.isNotBlank() }
-                    ?.let { stringResource(R.string.research_detail_created, it) },
+                    ?.let { stringResource(R.string.research_detail_created, formatServerTime(it)) },
                 item.updated_at?.takeIf { it.isNotBlank() }
-                    ?.let { stringResource(R.string.research_detail_updated, it) },
+                    ?.let { stringResource(R.string.research_detail_updated, formatServerTime(it)) },
             )
             if (meta.isNotEmpty()) {
                 Column {
@@ -363,12 +377,23 @@ private fun ResearchRow(item: ResearchItemDto, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(
-            displayTitle,
-            style = MaterialTheme.typography.titleMedium,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Row(verticalAlignment = Alignment.Top) {
+            Text(
+                displayTitle,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (item.pinned != 0) {
+                Icon(
+                    Icons.Filled.PushPin,
+                    contentDescription = stringResource(R.string.research_detail_pinned),
+                    modifier = Modifier.padding(start = 8.dp).size(18.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
         if (firstUrl != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -407,14 +432,31 @@ private fun ResearchRow(item: ResearchItemDto, onClick: () -> Unit) {
     }
 }
 
-private fun openUrl(context: android.content.Context, url: String) {
-    val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return
-    runCatching {
+/**
+ * Link im Browser öffnen (Custom Tab, sonst VIEW-Intent). Links ohne Schema bekommen
+ * `https://` ([normalizeResearchUrl]). Wirft nie — false, wenn nichts öffnen konnte
+ * (der Aufrufer zeigt dann eine Snackbar).
+ */
+private fun openUrl(context: android.content.Context, url: String): Boolean {
+    val normalized = normalizeResearchUrl(url).takeIf { it.isNotEmpty() } ?: return false
+    val uri = runCatching { Uri.parse(normalized) }.getOrNull() ?: return false
+    return runCatching {
         CustomTabsIntent.Builder().build().launchUrl(context, uri)
     }.recoverCatching {
         // Kein Custom-Tabs-fähiger Browser → generischer VIEW-Intent.
         context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, uri))
-    }.onFailure {
-        if (it !is ActivityNotFoundException) throw it
+    }.isSuccess
+}
+
+/** Vertikal zentrierter Inhalt in einer scrollbaren Liste (für Pull-to-Refresh). */
+@Composable
+private fun CenteredScrollable(content: @Composable () -> Unit) {
+    LazyColumn(Modifier.fillMaxSize()) {
+        item {
+            Box(
+                Modifier.fillParentMaxSize().padding(32.dp),
+                contentAlignment = Alignment.Center,
+            ) { content() }
+        }
     }
 }

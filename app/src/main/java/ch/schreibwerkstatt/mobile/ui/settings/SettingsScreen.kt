@@ -2,7 +2,9 @@ package ch.schreibwerkstatt.mobile.ui.settings
 
 import android.content.Intent
 import android.os.Build
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -114,6 +116,16 @@ fun SettingsScreen(
                     )
                 },
             )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_swipe_history)) },
+                supportingContent = { Text(stringResource(R.string.settings_swipe_history_hint)) },
+                trailingContent = {
+                    Switch(
+                        checked = state.swipeToHistory,
+                        onCheckedChange = vm::setSwipeToHistory,
+                    )
+                },
+            )
             HorizontalDivider()
 
             // === Synchronisierung ===
@@ -199,14 +211,9 @@ fun SettingsScreen(
             ListItem(
                 headlineContent = { Text(stringResource(R.string.settings_diagnostics)) },
                 leadingContent = { Icon(Icons.Filled.Share, contentDescription = null) },
-                modifier = Modifier.fillMaxWidth(),
-                trailingContent = {
-                    OutlinedButton(onClick = {
-                        shareDiagnostics(context, state, online, pendingCount)
-                    }) {
-                        Text(stringResource(R.string.settings_diagnostics))
-                    }
-                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { shareDiagnostics(context, state, online, pendingCount) },
             )
             HorizontalDivider()
 
@@ -237,7 +244,18 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showSignOutDialog = false },
             title = { Text(stringResource(R.string.settings_signout_confirm_title)) },
-            text = { Text(stringResource(R.string.settings_signout_confirm_message)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.settings_signout_confirm_message))
+                    // Live-Zähler: sinkt, während «Erst synchronisieren» läuft.
+                    if (pendingCount > 0) {
+                        Text(
+                            pluralStringResource(R.plurals.settings_signout_pending, pendingCount, pendingCount),
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -251,8 +269,22 @@ fun SettingsScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showSignOutDialog = false }) {
-                    Text(stringResource(R.string.action_cancel))
+                Row {
+                    if (pendingCount > 0) {
+                        TextButton(
+                            onClick = { context.locator.syncCoordinator.syncAllNow() },
+                            enabled = online && !syncing,
+                        ) {
+                            Text(
+                                stringResource(
+                                    if (syncing) R.string.settings_sync_running else R.string.settings_signout_sync_first
+                                )
+                            )
+                        }
+                    }
+                    TextButton(onClick = { showSignOutDialog = false }) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
                 }
             },
         )
@@ -271,13 +303,21 @@ private fun VersionWithUpdateCheckItem() {
     ListItem(
         headlineContent = { Text(stringResource(R.string.settings_version)) },
         supportingContent = {
-            Text(
-                when {
-                    checking -> stringResource(R.string.settings_checking_update)
-                    updateState is UpdateState.UpToDate -> stringResource(R.string.settings_up_to_date)
-                    else -> BuildConfig.VERSION_NAME
-                }
-            )
+            // Die Version bleibt immer sichtbar; der Prüf-Status hängt nur an.
+            val version = BuildConfig.VERSION_NAME
+            when (val s = updateState) {
+                is UpdateState.Error -> Text(
+                    stringResource(R.string.settings_version_update_error, version, s.message),
+                    color = MaterialTheme.colorScheme.error,
+                )
+                else -> Text(
+                    when {
+                        checking -> stringResource(R.string.settings_version_checking, version)
+                        s is UpdateState.UpToDate -> stringResource(R.string.settings_version_current, version)
+                        else -> version
+                    }
+                )
+            }
         },
         trailingContent = {
             OutlinedButton(
@@ -343,17 +383,21 @@ private fun shareDiagnostics(
     online: Boolean,
     pendingCount: Int,
 ) {
+    // Bewusst sprachneutrale Schlüssel statt @string-Texten: Die Diagnose ist ein
+    // Support-Text, den der Entwickler liest — maschinenlesbar und in jeder App-Sprache
+    // gleich, statt deutsch/englisch gemischt. Nur Betreff und Chooser sind lokalisiert.
     val text = buildString {
         appendLine("Schreibwerkstatt Android")
-        appendLine("App-Version: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-        appendLine("Client: ${BuildConfig.CLIENT_VERSION}")
-        appendLine("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-        appendLine("Gerät: ${Build.MANUFACTURER} ${Build.MODEL}")
-        appendLine("Gerätename: ${state.deviceName}")
-        appendLine("Server: ${state.serverUrl.ifBlank { "—" }}")
-        appendLine("Geräte-ID: ${state.deviceId.ifBlank { "—" }}")
-        appendLine("Diktat (STT): ${context.getString(state.sttStatus.label)}")
-        appendLine("Status: ${if (online) "online" else "offline"}, $pendingCount ausstehend")
+        appendLine("app_version=${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+        appendLine("client=${BuildConfig.CLIENT_VERSION}")
+        appendLine("android=${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+        appendLine("device=${Build.MANUFACTURER} ${Build.MODEL}")
+        appendLine("device_name=${state.deviceName}")
+        appendLine("server=${state.serverUrl.ifBlank { "-" }}")
+        appendLine("device_id=${state.deviceId.ifBlank { "-" }}")
+        appendLine("stt=${state.sttStatus.name.lowercase()}")
+        appendLine("status=${if (online) "online" else "offline"}")
+        appendLine("pending=$pendingCount")
     }
     val send = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"

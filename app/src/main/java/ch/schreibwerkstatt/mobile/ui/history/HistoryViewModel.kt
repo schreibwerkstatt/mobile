@@ -8,6 +8,8 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import ch.schreibwerkstatt.mobile.ServiceLocator
 import ch.schreibwerkstatt.mobile.data.net.dto.RevisionDto
 import ch.schreibwerkstatt.mobile.data.repo.ContentRepository
+import ch.schreibwerkstatt.mobile.ui.components.UiError
+import ch.schreibwerkstatt.mobile.ui.components.toUiError
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,13 +37,25 @@ data class RevisionPreview(
 data class HistoryUiState(
     val loading: Boolean = true,
     val revisions: List<RevisionDto> = emptyList(),
-    val error: String? = null,
+    val error: UiError? = null,
     /** Aktuell offene Vorschau (Dialog), sonst null. */
     val preview: RevisionPreview? = null,
-    /** true, während ein Restore läuft. */
+    /** true, während ein Restore (inkl. vorgeschaltetem Flush) läuft. */
     val restoring: Boolean = false,
     /** Einmalige Fehler-Snackbar; nach Anzeige via [consumeMessage] löschen. */
-    val message: String? = null,
+    val message: UiError? = null,
+    /**
+     * Fehler einer Aktion in der offenen Vorschau (Restore, Diff). Wird IM Dialog
+     * angezeigt — eine Snackbar läge hinter dem Vollbild-Dialog.
+     */
+    val previewError: UiError? = null,
+    /**
+     * Revision, deren Restore auf die Bestätigung «Nicht synchronisierte Änderungen
+     * gehen verloren» wartet (der Flush davor ist gescheitert), sonst null.
+     */
+    val discardWarningRevId: Long? = null,
+    /** Einmaliges Ereignis: Restore erfolgreich; Screen navigiert, dann [consumeRestored]. */
+    val restoredPageId: Long? = null,
 )
 
 class HistoryViewModel(
@@ -60,13 +74,13 @@ class HistoryViewModel(
             _state.update { it.copy(loading = true, error = null) }
             repo.pageRevisions(pageId)
                 .onSuccess { revs -> _state.update { it.copy(revisions = revs, loading = false) } }
-                .onFailure { e -> _state.update { it.copy(error = e.message, loading = false) } }
+                .onFailure { e -> _state.update { it.copy(error = e.toUiError(), loading = false) } }
         }
     }
 
     /** Vorschau öffnen und den vollen HTML-Body der Revision nachladen. */
     fun openPreview(rev: RevisionDto) {
-        _state.update { it.copy(preview = RevisionPreview(rev)) }
+        _state.update { it.copy(preview = RevisionPreview(rev), previewError = null) }
         viewModelScope.launch {
             repo.pageRevision(pageId, rev.id)
                 .onSuccess { (full, prev) ->
@@ -86,7 +100,7 @@ class HistoryViewModel(
                 .onFailure { e ->
                     _state.update { s ->
                         if (s.preview?.revision?.id == rev.id) {
-                            s.copy(preview = null, message = e.message)
+                            s.copy(preview = null, message = e.toUiError())
                         } else s
                     }
                 }
@@ -131,7 +145,7 @@ class HistoryViewModel(
                         if (s.preview?.revision?.id == revId) {
                             s.copy(
                                 preview = s.preview.copy(loadingDiff = false, showDiff = false),
-                                message = e.message,
+                                previewError = e.toUiError(),
                             )
                         } else s
                     }
@@ -139,27 +153,56 @@ class HistoryViewModel(
         }
     }
 
-    fun closePreview() = _state.update { it.copy(preview = null) }
+    fun closePreview() {
+        if (_state.value.restoring) return
+        _state.update { it.copy(preview = null, previewError = null, discardWarningRevId = null) }
+    }
 
     fun consumeMessage() = _state.update { it.copy(message = null) }
 
+    fun consumePreviewError() = _state.update { it.copy(previewError = null) }
+
+    fun consumeRestored() = _state.update { it.copy(restoredPageId = null) }
+
     /**
-     * Revision wiederherstellen. Bei Erfolg [onRestored] mit der Page-ID aufrufen
-     * (für die Navigation zurück in den frischen Editor-Stand).
+     * Revision wiederherstellen (nach der ersten Bestätigung). Das Wiederherstellen
+     * verwirft lokale, noch nicht gesyncte Änderungen — darum erst diesen Abschnitt
+     * flushen: Gelingt das, liegen die Änderungen als eigene Revision am Server und
+     * gehen nicht verloren. Scheitert es (offline, Konflikt, Sperre), wird nichts
+     * verworfen, sondern [HistoryUiState.discardWarningRevId] gesetzt; erst
+     * [confirmDiscardAndRestore] stellt dann trotzdem wieder her.
+     * Erfolg meldet [HistoryUiState.restoredPageId].
      */
-    fun restore(revId: Long, onRestored: (pageId: Long) -> Unit) {
+    fun restore(revId: Long) {
         if (_state.value.restoring) return
+        _state.update { it.copy(restoring = true, previewError = null) }
         viewModelScope.launch {
-            _state.update { it.copy(restoring = true) }
-            repo.restoreRevision(pageId, revId, bookId)
-                .onSuccess {
-                    _state.update { it.copy(restoring = false, preview = null) }
-                    onRestored(pageId)
-                }
-                .onFailure { e ->
-                    _state.update { it.copy(restoring = false, message = e.message) }
-                }
+            if (repo.hasUnsyncedChanges(pageId) && !repo.flushPage(pageId)) {
+                _state.update { it.copy(restoring = false, discardWarningRevId = revId) }
+                return@launch
+            }
+            doRestore(revId)
         }
+    }
+
+    /** «Trotzdem wiederherstellen»: lokale, nicht gesyncte Änderungen bewusst verwerfen. */
+    fun confirmDiscardAndRestore() {
+        val revId = _state.value.discardWarningRevId ?: return
+        if (_state.value.restoring) return
+        _state.update { it.copy(restoring = true, discardWarningRevId = null, previewError = null) }
+        viewModelScope.launch { doRestore(revId) }
+    }
+
+    fun dismissDiscardWarning() = _state.update { it.copy(discardWarningRevId = null) }
+
+    private suspend fun doRestore(revId: Long) {
+        repo.restoreRevision(pageId, revId, bookId)
+            .onSuccess {
+                _state.update { it.copy(restoring = false, preview = null, restoredPageId = pageId) }
+            }
+            .onFailure { e ->
+                _state.update { it.copy(restoring = false, previewError = e.toUiError()) }
+            }
     }
 
     companion object {

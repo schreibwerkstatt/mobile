@@ -1,7 +1,9 @@
 package ch.schreibwerkstatt.mobile.ui.pairing
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -44,6 +46,12 @@ data class PairingUiState(
      * mit `discardConfirmed = true` erneut läuft.
      */
     val confirmDiscard: Int? = null,
+    /**
+     * Einmal-Ereignis: Pairing erfolgreich. Der Screen navigiert darauf in einem
+     * LaunchedEffect weiter — das ViewModel ruft keine UI-Lambdas auf (die hielten
+     * sonst den alten NavController/Screen über Konfigurationswechsel fest).
+     */
+    val paired: Boolean = false,
 )
 
 /**
@@ -57,17 +65,33 @@ class PairingViewModel(
     private val tokenStore: TokenStore,
     private val network: NetworkClient,
     private val repo: ContentRepository,
+    private val handle: SavedStateHandle,
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(PairingUiState(deviceName = android.os.Build.MODEL ?: "Android"))
+    // Die getippte Server-Adresse überlebt Process Death (SavedStateHandle) — das Token
+    // bewusst NICHT: ein Geheimnis gehört nicht in den Instance-State (Bundle).
+    private val _state = MutableStateFlow(
+        PairingUiState(
+            serverUrl = handle.get<String>(KEY_SERVER_URL) ?: DEFAULT_SERVER_URL,
+            deviceName = android.os.Build.MODEL ?: "Android",
+        )
+    )
     val state: StateFlow<PairingUiState> = _state.asStateFlow()
 
     init {
-        viewModelScope.launch {
-            settings.serverBaseUrlOnce()?.let { url ->
-                _state.value = _state.value.copy(serverUrl = url)
+        if (handle.get<String>(KEY_SERVER_URL) == null) {
+            viewModelScope.launch {
+                settings.serverBaseUrlOnce()?.let { url ->
+                    // Nicht überschreiben, falls der Nutzer schon getippt hat.
+                    if (handle.get<String>(KEY_SERVER_URL) == null) setServerUrl(url)
+                }
             }
         }
+    }
+
+    private fun setServerUrl(url: String) {
+        handle[KEY_SERVER_URL] = url
+        _state.value = _state.value.copy(serverUrl = url)
     }
 
     /**
@@ -82,32 +106,35 @@ class PairingViewModel(
      * und läuft danach durch denselben [couple]-Pfad wie die manuelle Eingabe
      * (Verifikation gegen `GET …/config`, Speichern erst bei Erfolg).
      */
-    fun useDemo(onPaired: () -> Unit) {
+    fun useDemo() {
         if (!demoAvailable) return
-        _state.value = _state.value.copy(
-            serverUrl = BuildConfig.DEMO_SERVER_URL,
-            token = BuildConfig.DEMO_DEVICE_TOKEN,
-            error = null,
-        )
-        couple(onPaired)
+        setServerUrl(BuildConfig.DEMO_SERVER_URL)
+        _state.value = _state.value.copy(token = BuildConfig.DEMO_DEVICE_TOKEN, error = null)
+        couple()
     }
 
     fun dismissDiscard() { _state.value = _state.value.copy(confirmDiscard = null) }
 
-    fun onServerUrlChange(v: String) { _state.value = _state.value.copy(serverUrl = v, error = null) }
+    fun onServerUrlChange(v: String) {
+        handle[KEY_SERVER_URL] = v
+        _state.value = _state.value.copy(serverUrl = v, error = null)
+    }
+
+    /** Vom Screen nach der Navigation aufgerufen: [PairingUiState.paired] ist verarbeitet. */
+    fun consumePaired() { _state.value = _state.value.copy(paired = false) }
     fun onTokenChange(v: String) { _state.value = _state.value.copy(token = v, error = null) }
     fun onDeviceNameChange(v: String) { _state.value = _state.value.copy(deviceName = v) }
 
     /**
      * URL + Token prüfen, Token gegen den Server verifizieren und bei Erfolg
-     * speichern. [onPaired] wird nur bei erfolgreichem Pairing aufgerufen.
+     * speichern. Nur bei Erfolg wird [PairingUiState.paired] gesetzt.
      *
      * Die Server-URL wird erst nach erfolgreicher Verifikation übernommen. Ist es ein
      * ANDERER Server als bisher, wird der lokale Cache samt Queue geleert (Seiten-IDs
      * sind serverlokal) — liegen dort noch ungesendete Änderungen, erst nach
      * Rückfrage ([PairingUiState.confirmDiscard]).
      */
-    fun couple(onPaired: () -> Unit, discardConfirmed: Boolean = false) {
+    fun couple(discardConfirmed: Boolean = false) {
         val rawUrl = _state.value.serverUrl.trim()
         val token = _state.value.token.trim()
 
@@ -121,6 +148,7 @@ class PairingViewModel(
         }
 
         val normalized = SettingsStore.normalizeBaseUrl(rawUrl)
+        handle[KEY_SERVER_URL] = normalized
         _state.value = _state.value.copy(serverUrl = normalized, busy = true, error = null, confirmDiscard = null)
 
         viewModelScope.launch {
@@ -138,8 +166,7 @@ class PairingViewModel(
                     settings.setServerBaseUrl(normalized)
                     val label = _state.value.deviceName.ifBlank { "Android" }
                     tokenStore.save(token, label, null)
-                    _state.value = _state.value.copy(busy = false)
-                    onPaired()
+                    _state.value = _state.value.copy(busy = false, paired = true)
                 }
                 is VerifyResult.Unauthorized ->
                     _state.value = _state.value.copy(busy = false, error = PairingError.Unauthorized)
@@ -150,8 +177,15 @@ class PairingViewModel(
     }
 
     companion object {
+        private const val KEY_SERVER_URL = "pairing_server_url"
+
         fun factory(locator: ServiceLocator): ViewModelProvider.Factory = viewModelFactory {
-            initializer { PairingViewModel(locator.settings, locator.tokenStore, locator.network, locator.repository) }
+            initializer {
+                PairingViewModel(
+                    locator.settings, locator.tokenStore, locator.network, locator.repository,
+                    createSavedStateHandle(),
+                )
+            }
         }
     }
 }

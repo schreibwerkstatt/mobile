@@ -11,6 +11,8 @@
     <string name="a11y_calendar_today">today</string>
     <string name="a11y_calendar_has_entry">entry exists</string>
     <string name="a11y_calendar_no_entry">no entry</string>
+    <string name="a11y_calendar_create_entry">create entry</string>
+    <string name="a11y_action_open_history">open history</string>
 
     <!-- Pairing -->
     <string name="pairing_title">Pair device</string>
@@ -34,6 +36,8 @@
     <string name="pairing_error_prefix">Token must start with %1$s</string>
     <string name="pairing_error_invalid">Token invalid or revoked.</string>
     <string name="pairing_error_unreachable">Server unreachable: %1$s</string>
+    <string name="pairing_token_show">Show token</string>
+    <string name="pairing_token_hide">Hide token</string>
 
     <!-- Books -->
     <string name="books_title">Books</string>
@@ -41,6 +45,10 @@
     <string name="books_empty">No books found.</string>
     <string name="books_empty_hint">Pull down to refresh.</string>
     <string name="books_load_error">Could not load books: %1$s</string>
+    <string name="books_not_loaded">Could not load books.</string>
+    <string name="role_editor">Editor</string>
+    <string name="role_lektor">Proof-reader</string>
+    <string name="role_viewer">Reader</string>
 
     <!-- Settings -->
     <string name="settings_title">Settings</string>
@@ -53,8 +61,6 @@
     <string name="settings_stt_unknown">unknown</string>
     <string name="settings_version">Version</string>
     <string name="settings_check_update">Check for updates</string>
-    <string name="settings_checking_update">Checking…</string>
-    <string name="settings_up_to_date">You are already on the latest version.</string>
 
     <!-- Settings: sections -->
     <string name="settings_section_appearance">Appearance</string>
@@ -88,6 +94,10 @@
     <string name="settings_spellcheck_hint">Check spelling, grammar and style in the editor via LanguageTool</string>
     <string name="settings_spellcheck_unavailable">Not enabled on this server</string>
 
+    <!-- Settings: swipe gesture in the section list -->
+    <string name="settings_swipe_history">Swipe opens history</string>
+    <string name="settings_swipe_history_hint">Swipe a section far to the left in the list to open its history</string>
+
     <!-- Editor: spell-check UI inside the WebView (badge/popover of the editor
          bundle). Keys match the spellcheck controller's i18n keys; "{n}" is
          replaced by the controller with the number of hits. -->
@@ -111,6 +121,14 @@
     <string name="settings_signout_confirm_title">Sign out device?</string>
     <string name="settings_signout_confirm_message">The local token will be removed from this device. Unsynced changes may be lost. Continue?</string>
     <string name="settings_signout_confirm">Sign out</string>
+    <plurals name="settings_signout_pending">
+        <item quantity="one">%d change not yet synced</item>
+        <item quantity="other">%d changes not yet synced</item>
+    </plurals>
+    <string name="settings_signout_sync_first">Sync first</string>
+    <string name="settings_version_current">%1$s – up to date</string>
+    <string name="settings_version_checking">%1$s – checking…</string>
+    <string name="settings_version_update_error">%1$s – update check failed: %2$s</string>
     <string name="action_cancel">Cancel</string>
 
     <!-- Update dialog -->
@@ -126,6 +144,7 @@
     <string name="update_install">Install</string>
     <string name="update_error_incomplete">Download incomplete — please try again.</string>
     <string name="update_error_signature">The downloaded app\'s signature does not match. Installation aborted.</string>
+    <string name="update_error_download">Download failed.</string>
     <string name="action_close">Close</string>
     <string name="action_retry">Try again</string>
 
@@ -134,6 +153,8 @@
     <string name="tree_page_updated">Last changed: %1$s</string>
     <string name="tree_page_updated_unknown">Not yet synced</string>
     <string name="tree_load_error">Error loading: %1$s</string>
+    <string name="tree_empty">This book has no sections yet.</string>
+    <string name="tree_cached_hint">Showing the last loaded state. %1$s</string>
     <string name="history_title">History</string>
     <string name="history_empty">No earlier versions yet.</string>
     <string name="history_load_error">Error loading history: %1$s</string>
@@ -156,6 +177,10 @@
     <string name="history_show_changes">Changes</string>
     <string name="history_show_changes_desc">Show changes compared to the previous version</string>
     <string name="history_no_changes">No text changes compared to the previous version (formatting or similar only).</string>
+    <string name="history_restore_unsynced_title">Unsynced changes will be lost</string>
+    <string name="history_restore_unsynced_message">The local changes to this section could not be sent to the server (offline, conflict or locked). Restoring will discard them.</string>
+    <string name="history_restore_anyway">Restore anyway</string>
+    <string name="history_restore_offline">Restoring is only possible online.</string>
 
     <!-- Diary / calendar -->
     <string name="calendar_show">Show calendar</string>
@@ -200,6 +225,15 @@
     <string name="editor_msg_server_resolved">Server version loaded – local change discarded.</string>
     <string name="editor_msg_local_resolved">Your version saved.</string>
     <string name="editor_msg_load_failed">Loading failed: %1$s</string>
+    <string name="editor_msg_record_failed_plain">Recording failed.</string>
+    <string name="editor_msg_transcribe_failed">Transcription failed: %1$s</string>
+    <string name="editor_msg_reloaded">Editor reloaded.</string>
+    <string name="editor_boot_failed">The editor could not be started.</string>
+    <string name="editor_conflict_preview_failed">Preview not available.</string>
+    <string name="editor_conflict_preview_retry">Reload</string>
+    <string name="editor_conflict_discard_title">Discard your version?</string>
+    <string name="editor_conflict_discard_message">The section will be replaced by the server version. Your local changes that have not reached the server yet will be lost.</string>
+    <string name="editor_conflict_discard_confirm">Discard</string>
     <!-- Microphone permission (dictation). -->
     <string name="editor_mic_denied">Microphone permission missing. Please allow it in the app settings to dictate.</string>
     <string name="editor_mic_rationale_title">Microphone access</string>
@@ -230,7 +264,6 @@
     <string name="research_detail_pinned">Pinned</string>
     <string name="research_detail_has_image">Image attached</string>
     <string name="research_detail_has_doc">Document attached: %1$s</string>
-    <string name="research_detail_close">Close</string>
     <!-- Capture form -->
     <string name="research_capture_title">Capture research</string>
     <string name="research_book_label">Book</string>
@@ -242,6 +275,10 @@
     <string name="research_saved">Research saved.</string>
     <string name="research_save_error">Save failed: %1$s</string>
     <string name="research_capture_hint">Stored in the chosen book’s research board (online).</string>
+    <string name="research_books_unavailable">No books available – the book list could not be loaded.</string>
+    <string name="research_discard_title">Discard your input?</string>
+    <string name="research_discard_confirm">Discard</string>
+    <string name="research_open_failed">Could not open the link.</string>
 
     <!-- Sync status (offline/queue banner) -->
     <string name="sync_offline">Offline – changes are saved locally</string>
@@ -253,4 +290,12 @@
         <item quantity="one">Syncing %d change…</item>
         <item quantity="other">Syncing %d changes…</item>
     </plurals>
+    <!-- Error categories (ui/components/UiError.kt) -->
+    <string name="error_offline">No connection to the server.</string>
+    <string name="error_locked">The section is currently locked.</string>
+    <string name="error_not_found">Not found – was it deleted on the server?</string>
+    <string name="error_unauthorized">Not authorized.</string>
+    <string name="error_bad_response">Unexpected response from the server.</string>
+    <string name="error_server">Server error (HTTP %1$d).</string>
+    <string name="error_unknown">Unexpected error (%1$s).</string>
 </resources>

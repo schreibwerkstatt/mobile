@@ -128,3 +128,16 @@ data class PendingWriteEntity(
         const val STATUS_FAILED = "failed"
     }
 }
+
+/**
+ * Offline-Cache der Buch-Gliederung (`GET content/books/{id}/tree`): die letzte
+ * erfolgreiche Antwort als JSON ([ch.schreibwerkstatt.mobile.data.net.ApiJson]),
+ * eine Zeile pro Buch. Nur Anzeige-Cache — Abschnittsinhalte liegen in `pages`.
+ */
+@Entity(tableName = "tree_cache")
+data class TreeCacheEntity(
+    @PrimaryKey val bookId: Long,
+    val json: String,
+    /** Abrufzeitpunkt (epoch ms). */
+    val fetchedAt: Long,
+)

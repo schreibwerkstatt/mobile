@@ -41,9 +41,15 @@ class FakeContentApi : ContentApi {
     /** Antwort auf page() (z.B. für Konfliktauflösung). */
     var pageResponder: (Long) -> PageDto = { PageDto(id = it) }
 
+    /** Verzögerung vor der page()-Antwort (virtuelle Zeit unter runTest), z.B. „hängendes Netz". */
+    var pageDelayMs: Long = 0
+
     override suspend fun books(): List<BookDto> = emptyList()
 
-    override suspend fun tree(bookId: Long): TreeDto = throw NotImplementedError()
+    /** Antwort auf tree(); Default wirft (z.B. „offline"). */
+    var treeResponder: (Long) -> TreeDto = { throw NotImplementedError() }
+
+    override suspend fun tree(bookId: Long): TreeDto = treeResponder(bookId)
 
     override suspend fun sync(bookId: Long, since: String?, sinceId: Long?, limit: Int): SyncResponse {
         syncCalls++
@@ -52,7 +58,10 @@ class FakeContentApi : ContentApi {
         return syncQueue.removeFirstOrNull() ?: SyncResponse(now = "now", pages = emptyList(), has_more = false)
     }
 
-    override suspend fun page(pageId: Long): PageDto = pageResponder(pageId)
+    override suspend fun page(pageId: Long): PageDto {
+        if (pageDelayMs > 0) kotlinx.coroutines.delay(pageDelayMs)
+        return pageResponder(pageId)
+    }
 
     override suspend fun savePage(pageId: Long, body: SavePageRequest): Response<PageDto> {
         lastSaveRequest = body
@@ -77,8 +86,11 @@ class FakeContentApi : ContentApi {
     override suspend fun revision(pageId: Long, revId: Long): RevisionDetailResponse =
         throw NotImplementedError()
 
+    /** Antwort auf restoreRevision; per Test gesetzt. */
+    var restoreResponder: (Long, Long) -> Response<RestoreResponse> = { _, _ -> throw NotImplementedError() }
+
     override suspend fun restoreRevision(pageId: Long, revId: Long): Response<RestoreResponse> =
-        throw NotImplementedError()
+        restoreResponder(pageId, revId)
 
     companion object {
         private val JSON = "application/json".toMediaType()

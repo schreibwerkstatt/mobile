@@ -16,6 +16,8 @@ import ch.schreibwerkstatt.mobile.editor.EditorBridge
 import ch.schreibwerkstatt.mobile.editor.EditorEvent
 import ch.schreibwerkstatt.mobile.editor.SpellcheckClient
 import ch.schreibwerkstatt.mobile.editor.WritingTimeTracker
+import ch.schreibwerkstatt.mobile.ui.components.UiError
+import ch.schreibwerkstatt.mobile.ui.components.toUiError
 import ch.schreibwerkstatt.mobile.ui.tree.orderedPages
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -66,10 +68,15 @@ sealed interface EditorMsg {
     /** Seite fremd gesperrt; [lockedBy] = E-Mail (null → „Lektorat"). */
     data class Locked(val lockedBy: String?) : EditorMsg
     data class EditorError(val detail: String) : EditorMsg
-    data class RecordFailed(val detail: String) : EditorMsg
+    /** Aufnahme liess sich nicht starten; [detail] null/leer → Text ohne Zusatz. */
+    data class RecordFailed(val detail: String?) : EditorMsg
+    /** Transkription fehlgeschlagen — immer sichtbar, auch ohne Exception-Text. */
+    data class TranscribeFailed(val error: UiError) : EditorMsg
     data object ServerResolved : EditorMsg
     data object LocalResolved : EditorMsg
-    data class LoadFailed(val detail: String) : EditorMsg
+    data class LoadFailed(val error: UiError) : EditorMsg
+    /** Der WebView-Renderer war abgestürzt; der Editor wurde neu aufgebaut. */
+    data object EditorReloaded : EditorMsg
     /** Bereits aufgelöster Text (fehlende Mikrofon-Berechtigung, Transkriptionsfehler). */
     data class Raw(val text: String) : EditorMsg
 }
@@ -101,6 +108,14 @@ data class EditorUiState(
     val conflictServerText: String? = null,
     /** true, während die beiden Konflikt-Fassungen geladen werden. */
     val conflictLoading: Boolean = false,
+    /** Laden der Konflikt-Fassungen fehlgeschlagen (Dialog bietet „Erneut laden"). */
+    val conflictPreviewFailed: Boolean = false,
+    /** Eine Konflikt-Auflösung läuft — alle Dialog-Aktionen sind gesperrt. */
+    val resolving: Boolean = false,
+    /** host.html konnte den Editor nicht starten (Fehler vor `onReady`). */
+    val bootFailed: Boolean = false,
+    /** Technischer Zusatz zu [bootFailed] (Exception-Message aus JS), sonst null. */
+    val bootErrorDetail: String? = null,
     /** Vorige Seite im Buch (Wisch nach rechts); null = keine. */
     val prevPage: PageRef? = null,
     /** Nächste Seite im Buch (Wisch nach links); null = keine. */
@@ -298,7 +313,17 @@ class EditorViewModel(
      * ins Leere und laufen nach dem echten `onReady` nicht erneut.
      */
     fun onWebViewCreated() {
-        _state.update { it.copy(editorReady = false) }
+        _state.update { it.copy(editorReady = false, bootFailed = false, bootErrorDetail = null) }
+    }
+
+    /**
+     * Der Renderer-Prozess der WebView ist weg (Absturz/OOM-Kill); der Screen baut
+     * eine neue WebView auf. Dieses VM lebt weiter — die Abschnitts-Anmeldung
+     * (`editorOpened`) und damit die Save-Basis bleiben unberührt; die neue WebView
+     * lädt den Abschnitt über die Bridge aus dem Cache (inkl. lokal-dirty Stand).
+     */
+    fun onRendererGone() {
+        _state.update { it.copy(editorReady = false, message = EditorMsg.EditorReloaded) }
     }
 
     /** Diktat-Ziel registrieren (Main-Thread); liefert gepufferten Text nach. */
@@ -351,6 +376,7 @@ class EditorViewModel(
         evalJs: (String) -> Unit,
         darkTheme: Boolean,
         spellcheckStrings: Map<String, String>,
+        uiLanguage: String,
     ): EditorBridge =
         EditorBridge(
             repo = repo,
@@ -367,6 +393,7 @@ class EditorViewModel(
             darkTheme = darkTheme,
             spellcheck = spellcheck,
             spellcheckStrings = spellcheckStrings,
+            uiLanguage = uiLanguage,
         ).also { bridge = it }
 
     /**
@@ -406,7 +433,15 @@ class EditorViewModel(
                 loadConflictPreviews()
             }
             is EditorEvent.Locked -> _state.update { st -> st.copy(message = EditorMsg.Locked(event.lockedByEmail)) }
-            is EditorEvent.Error -> _state.update { st -> st.copy(message = EditorMsg.EditorError(event.message)) }
+            // Vor `onReady` kann nur der Boot gescheitert sein → nativer Fehlerzustand
+            // mit „Erneut versuchen" statt einer flüchtigen Snackbar.
+            is EditorEvent.Error -> _state.update { st ->
+                if (!st.editorReady) {
+                    st.copy(bootFailed = true, bootErrorDetail = event.message.takeIf { it.isNotBlank() })
+                } else {
+                    st.copy(message = EditorMsg.EditorError(event.message))
+                }
+            }
         }
     }
 
@@ -431,7 +466,7 @@ class EditorViewModel(
                     _state.update { st -> st.copy(recording = true, level = 0f) }
                     monitorJob = viewModelScope.launch { monitorSilence() }
                 }
-                .onFailure { _state.update { st -> st.copy(message = EditorMsg.RecordFailed(it.message ?: "")) } }
+                .onFailure { _state.update { st -> st.copy(message = EditorMsg.RecordFailed(it.message)) } }
         } else {
             monitorJob?.cancel()
             monitorJob = null
@@ -483,7 +518,7 @@ class EditorViewModel(
                 .onFailure {
                     _state.update { st -> st.copy(
                         transcribing = false,
-                        message = it.message?.let { m -> EditorMsg.Raw(m) },
+                        message = EditorMsg.TranscribeFailed(it.toUiError()),
                     ) }
                 }
         }
@@ -491,11 +526,12 @@ class EditorViewModel(
 
     /**
      * Beide Konflikt-Fassungen (lokal vs. Server) als Klartext für die
-     * Vergleichsansicht im Dialog laden. Best effort: schlägt das Laden fehl,
-     * bleiben die Vorschau-Felder null (Dialog zeigt dann nur die Aktionen).
+     * Vergleichsansicht im Dialog laden. Schlägt das Laden fehl, bleiben die
+     * Vorschau-Felder null und [EditorUiState.conflictPreviewFailed] ist gesetzt
+     * (Dialog zeigt „Vorschau nicht verfügbar" + „Erneut laden").
      */
     private fun loadConflictPreviews() {
-        _state.update { st -> st.copy(conflictLoading = true) }
+        _state.update { st -> st.copy(conflictLoading = true, conflictPreviewFailed = false) }
         viewModelScope.launch {
             repo.conflictPreview(pageId)
                 .onSuccess { p ->
@@ -505,11 +541,27 @@ class EditorViewModel(
                         conflictLoading = false,
                     ) }
                 }
-                .onFailure { _state.update { st -> st.copy(conflictLoading = false) } }
+                .onFailure { _state.update { st -> st.copy(conflictLoading = false, conflictPreviewFailed = true) } }
         }
     }
 
+    /** „Erneut laden" im Konflikt-Dialog nach fehlgeschlagener Vorschau. */
+    fun retryConflictPreview() {
+        if (!_state.value.conflictLoading) loadConflictPreviews()
+    }
+
+    /**
+     * Sperrt die Dialog-Aktionen für die Dauer einer Auflösung. false = es läuft
+     * schon eine (Doppel-Tipp) → nichts tun. Nur Main-Thread.
+     */
+    private fun beginResolve(): Boolean {
+        if (_state.value.resolving) return false
+        _state.update { st -> st.copy(resolving = true) }
+        return true
+    }
+
     fun resolveConflictWithServer(onApplied: (html: String) -> Unit) {
+        if (!beginResolve()) return
         viewModelScope.launch {
             repo.resolveWithServerVersion(pageId, bookId)
                 .onSuccess { page ->
@@ -519,11 +571,15 @@ class EditorViewModel(
                         hasOpenConflict = false,
                         conflictLocalText = null,
                         conflictServerText = null,
+                        conflictPreviewFailed = false,
+                        resolving = false,
                         message = EditorMsg.ServerResolved,
                     ) }
                     onApplied(page.html ?: "<p><br></p>")
                 }
-                .onFailure { _state.update { st -> st.copy(message = EditorMsg.LoadFailed(it.message ?: "")) } }
+                .onFailure { e ->
+                    _state.update { st -> st.copy(resolving = false, message = EditorMsg.LoadFailed(e.toUiError())) }
+                }
         }
     }
 
@@ -533,6 +589,7 @@ class EditorViewModel(
      * Editor-Inhalt bleibt unverändert; nur der Konflikt-Zustand wird geräumt.
      */
     fun resolveConflictWithLocal() {
+        if (!beginResolve()) return
         viewModelScope.launch {
             repo.resolveWithLocalVersion(pageId, bookId)
                 .onSuccess {
@@ -542,21 +599,32 @@ class EditorViewModel(
                         hasOpenConflict = false,
                         conflictLocalText = null,
                         conflictServerText = null,
+                        conflictPreviewFailed = false,
+                        resolving = false,
                         message = EditorMsg.LocalResolved,
                     ) }
                 }
-                .onFailure { _state.update { st -> st.copy(message = EditorMsg.LoadFailed(it.message ?: "")) } }
+                .onFailure { e ->
+                    _state.update { st -> st.copy(resolving = false, message = EditorMsg.LoadFailed(e.toUiError())) }
+                }
         }
     }
 
-    /** Dialog schliessen, aber den offenen Konflikt-Hinweis (Topbar) bewusst behalten. */
-    fun dismissConflict() { _state.update { st -> st.copy(conflict = null) } }
+    /**
+     * Dialog schliessen, aber den offenen Konflikt-Hinweis (Topbar) bewusst behalten.
+     * Während einer laufenden Auflösung bleibt er offen.
+     */
+    fun dismissConflict() {
+        if (_state.value.resolving) return
+        _state.update { st -> st.copy(conflict = null) }
+    }
 
     /** Den weggetippten Konflikt-Dialog über den Topbar-Hinweis erneut öffnen. */
     fun reopenConflict() {
         lastConflict?.let {
             _state.update { st -> st.copy(conflict = it) }
-            if (_state.value.conflictServerText == null && !_state.value.conflictLoading) loadConflictPreviews()
+            val st = _state.value
+            if ((st.conflictServerText == null || st.conflictPreviewFailed) && !st.conflictLoading) loadConflictPreviews()
         }
     }
 

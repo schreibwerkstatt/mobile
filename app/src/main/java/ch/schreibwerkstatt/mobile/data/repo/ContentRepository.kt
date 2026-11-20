@@ -5,6 +5,8 @@ import ch.schreibwerkstatt.mobile.data.db.BookEntity
 import ch.schreibwerkstatt.mobile.data.db.PageContentHit
 import ch.schreibwerkstatt.mobile.data.db.PageEntity
 import ch.schreibwerkstatt.mobile.data.db.PendingWriteEntity
+import ch.schreibwerkstatt.mobile.data.db.TreeCacheEntity
+import ch.schreibwerkstatt.mobile.data.net.ApiJson
 import ch.schreibwerkstatt.mobile.data.net.DevicePingRequest
 import ch.schreibwerkstatt.mobile.data.net.NetworkClient
 import ch.schreibwerkstatt.mobile.data.net.WritingTimeRequest
@@ -14,6 +16,7 @@ import ch.schreibwerkstatt.mobile.data.net.dto.ChapterNodeDto
 import ch.schreibwerkstatt.mobile.data.net.dto.CreateChapterRequest
 import ch.schreibwerkstatt.mobile.data.net.dto.CreatePageRequest
 import ch.schreibwerkstatt.mobile.data.net.dto.PageConflictDto
+import ch.schreibwerkstatt.mobile.data.net.dto.PageDto
 import ch.schreibwerkstatt.mobile.data.net.dto.PageLockedDto
 import ch.schreibwerkstatt.mobile.data.net.dto.RevisionDto
 import ch.schreibwerkstatt.mobile.data.net.dto.SavePageRequest
@@ -27,6 +30,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.ResponseBody
 import kotlin.coroutines.cancellation.CancellationException
 import retrofit2.Response
@@ -83,11 +87,32 @@ class ContentRepository(
         // Leere Antwort NICHT als „alles gelöscht" interpretieren: `deleteMissing(emptyList)`
         // würde zu `DELETE … WHERE id NOT IN ()` = immer wahr → gesamter Buch-Cache weg.
         // Ein 200-mit-leerem-Body (Serverfehler/Scope-Problem) darf den Cache nicht leeren.
-        if (books.isNotEmpty()) db.bookDao().deleteMissing(books.map { it.id })
+        if (books.isNotEmpty()) {
+            db.bookDao().deleteMissing(books.map { it.id })
+            db.treeCacheDao().deleteMissing(books.map { it.id })
+        }
     }
 
+    /** Gliederung vom Server; jede erfolgreiche Antwort landet für [cachedTree] in `tree_cache`. */
     suspend fun tree(bookId: Long): Result<TreeDto> = runCatching {
-        net.content(baseUrl()).tree(bookId)
+        net.content(baseUrl()).tree(bookId).also { tree ->
+            // Cache-Schreibfehler machen den erfolgreichen Abruf nicht kaputt.
+            runCatching {
+                db.treeCacheDao().upsert(
+                    TreeCacheEntity(
+                        bookId = bookId,
+                        json = ApiJson.encodeToString(TreeDto.serializer(), tree),
+                        fetchedAt = System.currentTimeMillis(),
+                    )
+                )
+            }
+        }
+    }
+
+    /** Zuletzt erfolgreich geladene Gliederung (offline). null = nie geladen oder unlesbar. */
+    suspend fun cachedTree(bookId: Long): TreeDto? {
+        val row = db.treeCacheDao().byBook(bookId) ?: return null
+        return runCatching { ApiJson.decodeFromString(TreeDto.serializer(), row.json) }.getOrNull()
     }
 
     /** Buch-Metadaten aus dem lokalen Cache (u.a. `buchtyp`). */
@@ -231,12 +256,23 @@ class ContentRepository(
      *    deren bereits gecachte (nicht-dirty) Seite sonst veraltet angezeigt würde.
      * 3. Schlägt der Server-Abruf fehl (offline / Serverfehler) → auf den Cache
      *    zurückfallen, damit das Öffnen offline weiterhin funktioniert.
+     * 4. Liegt ein Cache vor, bekommt der Server höchstens [LOAD_PAGE_NETWORK_BUDGET_MS]:
+     *    In einem Netz, das „verbunden" meldet, aber nichts durchlässt (Funkloch,
+     *    Captive-Portal), liefe der Abruf sonst in die OkHttp-Timeouts (15 s Connect,
+     *    45 s Read), und der Editor bliebe so lange leer. Der Cache-Stand ist in sich
+     *    stimmig (`html`/`baseHtml`/`updatedAt`); einen neueren Server-Stand spielt der
+     *    offene Editor über `pullIntoEditor` nach, sonst mergt der nächste Save.
      */
     suspend fun loadPage(pageId: Long, bookId: Long): Result<PageEntity> = runCatching {
         val cached = db.pageDao().byId(pageId)
         if (cached != null && cached.dirty) return@runCatching cached
+        // Basis-URL (DataStore) vor dem Budget auflösen: das Budget gilt nur dem Netz.
+        val api = net.content(baseUrl())
+        val fetch: suspend () -> PageDto = { api.page(pageId) }
         val dto = try {
-            net.content(baseUrl()).page(pageId)
+            if (cached == null) fetch()
+            else withTimeoutOrNull(LOAD_PAGE_NETWORK_BUDGET_MS) { fetch() }
+                ?: return@runCatching cached
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -607,10 +643,38 @@ class ContentRepository(
         syncMutex.withLock {
             val api = net.content(baseUrl())
             val resp = api.restoreRevision(pageId, revId)
-            if (!resp.isSuccessful) error("restore HTTP ${resp.code()}")
+            if (!resp.isSuccessful) throw retrofit2.HttpException(resp)
             val dto = api.page(pageId)
             applyServerVersionDiscardingQueue(pageId, dto.html, dto.updated_at, dto.name)
         }
+    }
+
+    /**
+     * Hat der Abschnitt lokale Änderungen, die noch nicht am Server sind (dirty oder
+     * irgendein Queue-Eintrag, auch conflict/locked/failed)? Vor [restoreRevision]
+     * abzufragen: das Wiederherstellen verwirft sie.
+     */
+    suspend fun hasUnsyncedChanges(pageId: Long): Boolean =
+        db.pageDao().byId(pageId)?.dirty == true || db.pendingWriteDao().latestForPage(pageId) != null
+
+    /**
+     * Ausstehenden Write genau dieses Abschnitts jetzt flushen (vor dem Wiederherstellen
+     * einer Revision, damit die lokalen Änderungen als eigene Revision am Server landen
+     * statt verworfen zu werden). Liefert true, wenn danach nichts mehr ungesynct ist.
+     * Konflikt/Lock/offline/401 ⇒ false; der Write bleibt dann, wie [flushOne] ihn parkt.
+     */
+    suspend fun flushPage(pageId: Long): Boolean {
+        syncMutex.withLock {
+            val w = db.pendingWriteDao().pendingForPage(pageId)
+            if (w != null) {
+                try {
+                    flushOne(w.localId)
+                } catch (e: AuthLostException) {
+                    return false
+                }
+            }
+        }
+        return !hasUnsyncedChanges(pageId)
     }
 
     // ── Server-Stand für den offenen Editor ──────────────────────────────────
@@ -793,3 +857,9 @@ private fun parseMonthName(token: String?): Int? {
     return norm.split(MONTH_SPLIT_RE).filter { it.isNotEmpty() }
         .firstNotNullOfOrNull { MONTH_TOKENS[it] }
 }
+
+/**
+ * Netz-Budget von [ContentRepository.loadPage], wenn ein Cache vorliegt: so lange
+ * wartet das Öffnen eines Abschnitts höchstens auf den Server, dann nimmt es den Cache.
+ */
+internal const val LOAD_PAGE_NETWORK_BUDGET_MS = 2_500L
