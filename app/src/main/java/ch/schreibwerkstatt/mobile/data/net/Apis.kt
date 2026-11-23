@@ -7,6 +7,13 @@ import ch.schreibwerkstatt.mobile.data.net.dto.CreateChapterRequest
 import ch.schreibwerkstatt.mobile.data.net.dto.CreatePageRequest
 import ch.schreibwerkstatt.mobile.data.net.dto.CreateResearchRequest
 import ch.schreibwerkstatt.mobile.data.net.dto.ResearchItemDto
+import ch.schreibwerkstatt.mobile.data.net.dto.ResearchScrapeRequest
+import ch.schreibwerkstatt.mobile.data.net.dto.ResearchScrapeResponse
+import ch.schreibwerkstatt.mobile.data.net.dto.CreateIdeeRequest
+import ch.schreibwerkstatt.mobile.data.net.dto.IdeeDto
+import ch.schreibwerkstatt.mobile.data.net.dto.IdeenBoardDto
+import ch.schreibwerkstatt.mobile.data.net.dto.IdeeDeleteResponse
+import kotlinx.serialization.json.JsonObject
 import ch.schreibwerkstatt.mobile.data.net.dto.PageDto
 import ch.schreibwerkstatt.mobile.data.net.dto.RestoreResponse
 import ch.schreibwerkstatt.mobile.data.net.dto.RevisionDetailResponse
@@ -19,6 +26,8 @@ import okhttp3.RequestBody
 import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.Body
+import retrofit2.http.DELETE
+import retrofit2.http.PATCH
 import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
@@ -111,20 +120,77 @@ data class WritingTimeRequest(
 
 /**
  * Buchweites Recherche-/Wissensboard (`routes/research.js`, gilt hinter dem
- * Auth-Guard, Device-Token genügt). Die App nutzt v1 nur Liste + Anlegen.
+ * Auth-Guard, Device-Token genügt). Die App nutzt Liste, Anlegen, Bild-Upload und
+ * Text-Nachladen (Scrape); Anlegen/Upload/Scrape laufen über die Outbox.
  */
 interface ResearchApi {
-    /** Voll-Liste der (nicht-archivierten) Recherche-Items eines Buchs. */
+    /**
+     * Nicht-archivierte Recherche-Items eines Buchs (angeheftete zuerst). Device-Token
+     * bekommen die Client-Form und ohne [limit] höchstens 50 — darum immer
+     * [LIST_LIMIT] (Server-Maximum) mitschicken.
+     */
     @GET("research")
     suspend fun list(
         @Query("book_id") bookId: Long,
-        @Query("kind") kind: String? = null,
+        @Query("limit") limit: Int = LIST_LIMIT,
         @Query("sort") sort: String = "updated",
     ): List<ResearchItemDto>
 
-    /** Neues Item anlegen. 200 → [ResearchItemDto] · 400 `EMPTY`/`BOOKID_REQ` · 401 · 403. */
+    /**
+     * Neues Item anlegen. 200 → [ResearchItemDto] · 400 `EMPTY`/`BOOKID_REQ`/
+     * `INVALID_URL`/`INVALID_FIELD` · 409 `DUPLICATE_URL` (übersteuerbar mit
+     * `allow_duplicate`) · 401 · 403.
+     */
     @POST("research")
     suspend fun create(@Body body: CreateResearchRequest): Response<ResearchItemDto>
+
+    /** Bild anhängen: rohe Bytes mit `image/…`-Content-Type (z.B. `image/jpeg`), max. 12 MB. 400 `NO_IMAGE`/`IMAGE_INVALID`. */
+    @POST("research/{id}/image")
+    suspend fun uploadImage(@Path("id") id: Long, @Body image: RequestBody): Response<ResearchItemDto>
+
+    /** Link serverseitig lesen und leere Felder füllen. 400 `NO_URL` · 422 `SCRAPE_EMPTY` · 502 `SCRAPE_FAILED`. */
+    @POST("research/{id}/scrape")
+    suspend fun scrape(@Path("id") id: Long, @Body body: ResearchScrapeRequest): Response<ResearchScrapeResponse>
+
+    companion object {
+        /** Server-Maximum für `limit` (`LIST_LIMIT_MAX`). */
+        const val LIST_LIMIT = 200
+    }
+}
+
+/**
+ * Ideen-Board eines Buchs (`routes/ideen.js`, Vertrag api 7, hinter dem Auth-Guard; ein
+ * Device-Token mit `content:write` genügt). Ideen sind user-privat und kein Buchinhalt —
+ * sie laufen über [ch.schreibwerkstatt.mobile.data.repo.IdeenRepository], nicht über
+ * ContentRepository. Fehler kommen als `{ error_code }` (z.B. `CONTENT_REQ`,
+ * `CONTENT_TOO_LONG`, `BOOK_MISMATCH`, `IDEE_NOT_FOUND`, `IDEE_CLOSED`, `IDEE_STATUS_INACTIVE`).
+ */
+interface IdeenApi {
+    /** Alle Ideen des Buchs + Stufen. */
+    @GET("ideen/board")
+    suspend fun board(@Query("book_id") bookId: Long): IdeenBoardDto
+
+    /**
+     * Anlegen. [idempotencyKey] bleibt über alle Wiederholungen derselben Idee gleich —
+     * der Server liefert dann die erste Antwort erneut statt doppelt anzulegen.
+     */
+    @POST("ideen")
+    suspend fun create(
+        @Header("Idempotency-Key") idempotencyKey: String,
+        @Body body: CreateIdeeRequest,
+    ): Response<IdeeDto>
+
+    /**
+     * Felder einzeln optional: `content`, `status`, Anker (`page_id` ODER `chapter_id`;
+     * beide explizit `null` = zurück zur Buch-Idee). Als [JsonObject], weil [ApiJson]
+     * `null` sonst nicht schreibt (`explicitNulls = false`).
+     */
+    @PATCH("ideen/{id}")
+    suspend fun update(@Path("id") id: Long, @Body body: JsonObject): Response<IdeeDto>
+
+    /** 200 `{ ok: true }` · 404 `IDEE_NOT_FOUND` (beim Nachspielen = erledigt). */
+    @DELETE("ideen/{id}")
+    suspend fun delete(@Path("id") id: Long): Response<IdeeDeleteResponse>
 }
 
 /**
@@ -169,11 +235,12 @@ interface SttApi {
     /**
      * Rohe Audio-Bytes (kein Multipart). Content-Type trägt den Audio-Mime
      * (z.B. `audio/mp4`); [audio] muss mit derselben MediaType gebaut sein.
+     * [pageId] ist optional (Ideen-Diktat hat keinen Abschnitt); null = nicht gesendet.
      */
     @POST("stt/transcribe")
     suspend fun transcribe(
         @Query("bookId") bookId: Long,
-        @Query("pageId") pageId: Long,
+        @Query("pageId") pageId: Long?,
         @Body audio: RequestBody,
     ): Response<TranscribeResponse>
 }

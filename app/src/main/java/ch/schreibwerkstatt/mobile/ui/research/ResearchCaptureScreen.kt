@@ -12,6 +12,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.Alignment
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
@@ -53,8 +57,8 @@ import android.widget.Toast
 
 /**
  * Formular „Recherche festhalten". Erreichbar über den Share-Empfang (mit
- * vorbelegten Feldern aus [shared]) oder das „+"-FAB der Liste (mit
- * vorausgewähltem [preselectBookId]). Speichert online über das ViewModel.
+ * vorbelegten Feldern aus [shared], auch ein geteiltes Bild) oder das „+"-FAB der
+ * Liste (mit vorausgewähltem [preselectBookId]). Ohne Verbindung wird vorgemerkt.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,16 +80,20 @@ fun ResearchCaptureScreen(
     var url by rememberSaveable { mutableStateOf(shared?.url.orEmpty()) }
     var title by rememberSaveable { mutableStateOf(shared?.title.orEmpty()) }
     var note by rememberSaveable { mutableStateOf(shared?.note.orEmpty()) }
+    var imageUri by rememberSaveable { mutableStateOf(shared?.imageUri) }
+    val imageMime = shared?.imageMime
     var selectedBookId by rememberSaveable { mutableStateOf<Long?>(preselectBookId) }
     var menuExpanded by remember { mutableStateOf(false) }
     var confirmDiscard by remember { mutableStateOf(false) }
+    var duplicate by remember { mutableStateOf<CaptureResult.Duplicate?>(null) }
+    val urlValid = isValidResearchUrl(normalizeResearchUrl(url))
 
     // Zurück (System und Pfeil oben): während des Speicherns blockiert (das Ergebnis
     // schliesst den Screen ohnehin), mit Eingaben erst nach «Verwerfen?». Beendet wird
     // immer über onDone — sonst bleibt der geteilte Inhalt im Activity-State hängen
     // (erneutes Teilen desselben Links wirkte nicht, nach dem Neu-Koppeln öffnete sich
     // das Formular ungefragt wieder).
-    val hasInput = url.isNotBlank() || title.isNotBlank() || note.isNotBlank()
+    val hasInput = url.isNotBlank() || title.isNotBlank() || note.isNotBlank() || imageUri != null
     val onBackRequest: () -> Unit = {
         if (!saving) {
             if (hasInput) confirmDiscard = true else onDone()
@@ -103,26 +111,35 @@ fun ResearchCaptureScreen(
     }
 
     val savedMsg = stringResource(R.string.research_saved)
+    val queuedMsg = stringResource(R.string.research_queued)
     val errorTemplate = stringResource(R.string.research_save_error)
     LaunchedEffect(result) {
         when (val r = result) {
-            CaptureResult.Saved -> {
+            CaptureResult.Saved, CaptureResult.Queued -> {
                 vm.consumeResult()
                 // Toast statt Snackbar: der Screen schliesst sich sofort.
-                Toast.makeText(context, savedMsg, Toast.LENGTH_SHORT).show()
+                val msg = if (r == CaptureResult.Queued) queuedMsg else savedMsg
+                Toast.makeText(context, msg, if (r == CaptureResult.Queued) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
                 onDone()
             }
-            is CaptureResult.Error -> {
-                snackbarHostState.showSnackbar(errorTemplate.format(r.error.message(context.resources)))
+            is CaptureResult.Duplicate -> {
                 vm.consumeResult()
+                duplicate = r
+            }
+            is CaptureResult.Rejected -> {
+                vm.consumeResult()
+                snackbarHostState.showSnackbar(errorTemplate.format(rejectionText(context.resources, r.code)))
+            }
+            is CaptureResult.Error -> {
+                vm.consumeResult()
+                snackbarHostState.showSnackbar(errorTemplate.format(r.error.message(context.resources)))
             }
             null -> {}
         }
     }
 
     val selectedBook = books.firstOrNull { it.id == selectedBookId }
-    val canSave = selectedBookId != null && !saving &&
-        (url.isNotBlank() || title.isNotBlank() || note.isNotBlank())
+    val canSave = selectedBookId != null && !saving && urlValid && hasInput
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -143,7 +160,7 @@ fun ResearchCaptureScreen(
                     } else {
                         TextButton(
                             onClick = {
-                                selectedBookId?.let { vm.save(it, url, title, note) }
+                                selectedBookId?.let { vm.save(it, url, title, note, imageUri, imageMime) }
                             },
                             enabled = canSave,
                         ) { Text(stringResource(R.string.research_save)) }
@@ -211,6 +228,10 @@ fun ResearchCaptureScreen(
                 onValueChange = { url = it },
                 label = { Text(stringResource(R.string.research_url_label)) },
                 singleLine = true,
+                isError = !urlValid,
+                supportingText = if (!urlValid) {
+                    { Text(stringResource(R.string.research_url_invalid, RESEARCH_URL_MAX)) }
+                } else null,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -228,12 +249,52 @@ fun ResearchCaptureScreen(
                 minLines = 3,
                 modifier = Modifier.fillMaxWidth(),
             )
+            imageUri?.let {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.Image,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        stringResource(R.string.research_image_attached),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(start = 8.dp).weight(1f),
+                    )
+                    IconButton(onClick = { imageUri = null }, enabled = !saving) {
+                        Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.research_image_remove))
+                    }
+                }
+            }
             Text(
                 stringResource(R.string.research_capture_hint),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+
+    duplicate?.let { d ->
+        AlertDialog(
+            onDismissRequest = { duplicate = null; vm.resolveDuplicate(d.localId, keep = false) },
+            title = { Text(stringResource(R.string.research_duplicate_title)) },
+            text = {
+                Text(
+                    d.existingTitle?.let { stringResource(R.string.research_duplicate_text_named, it) }
+                        ?: stringResource(R.string.research_duplicate_text)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { duplicate = null; vm.resolveDuplicate(d.localId, keep = true) }) {
+                    Text(stringResource(R.string.research_duplicate_keep))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { duplicate = null; vm.resolveDuplicate(d.localId, keep = false) }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 
     if (confirmDiscard) {
@@ -250,4 +311,15 @@ fun ResearchCaptureScreen(
             },
         )
     }
+}
+
+/** Server-Abweisung beim Erfassen als Satz (bekannte `error_code`s, sonst mit Code). */
+internal fun rejectionText(res: android.content.res.Resources, code: String): String = when (code) {
+    "INVALID_URL" -> res.getString(R.string.research_url_invalid, RESEARCH_URL_MAX)
+    "INSUFFICIENT_ROLE" -> res.getString(R.string.error_read_only)
+    "NO_BOOK_ACCESS" -> res.getString(R.string.error_unauthorized)
+    "EMPTY" -> res.getString(R.string.research_error_empty)
+    "IMAGE_INVALID", "NO_IMAGE" -> res.getString(R.string.research_error_image)
+    "IMAGE_TOO_LARGE" -> res.getString(R.string.research_error_image_large)
+    else -> res.getString(R.string.research_error_rejected, code)
 }

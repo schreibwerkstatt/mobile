@@ -75,7 +75,7 @@ class DictationController(
     }
 
     /** Aufnahme stoppen und das Segment transkribieren. Liefert den erkannten Text. */
-    suspend fun stopAndTranscribe(bookId: Long, pageId: Long): Result<String> {
+    suspend fun stopAndTranscribe(bookId: Long, pageId: Long?): Result<String> {
         val file = stopRecorder() ?: return Result.failure(IllegalStateException("Keine Aufnahme"))
         if (file.length() == 0L) {
             // stop() direkt nach start() wirft und hinterlässt keine gültige Datei — nichts
@@ -104,7 +104,7 @@ class DictationController(
         return file
     }
 
-    private suspend fun transcribe(file: File, bookId: Long, pageId: Long): Result<String> =
+    private suspend fun transcribe(file: File, bookId: Long, pageId: Long?): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val baseUrl = settings.serverBaseUrlOnce() ?: error("Keine Server-URL")

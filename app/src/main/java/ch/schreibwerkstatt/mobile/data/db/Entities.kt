@@ -141,3 +141,114 @@ data class TreeCacheEntity(
     /** Abrufzeitpunkt (epoch ms). */
     val fetchedAt: Long,
 )
+
+/**
+ * Outbox fürs Recherche-Erfassen: jedes neue Fundstück wird zuerst hier vorgemerkt und
+ * dann seriell gesendet ([ch.schreibwerkstatt.mobile.data.repo.ResearchOutbox]) — offline
+ * bleibt es liegen, bis Verbindung da ist. Ein Fundstück hat bis zu drei Schritte:
+ * anlegen, Bild hochladen, Text nachladen (Scrape); [targetId] trägt nach dem Anlegen
+ * die Server-Id für die Folgeschritte.
+ */
+@Entity(
+    tableName = "research_outbox",
+    indices = [Index("bookId")],
+)
+data class ResearchOutboxEntity(
+    @PrimaryKey(autoGenerate = true) val localId: Long = 0,
+    val bookId: Long,
+    /** JSON von [ch.schreibwerkstatt.mobile.data.repo.ResearchCaptureOp]. */
+    val payload: String,
+    /** Server-Id des Fundstücks, sobald angelegt. */
+    val targetId: Long? = null,
+    /** Lokale Kopie eines geteilten Bilds (App-Speicher), wird nach dem Senden gelöscht. */
+    val imagePath: String? = null,
+    val imageMime: String? = null,
+    /** 0 = anlegen, 1 = Bild hochladen, 2 = Text nachladen. */
+    val step: Int = STEP_CREATE,
+    val status: String = STATUS_PENDING,
+    /** `error_code` bzw. bei [STATUS_DUPLICATE] der Titel des bestehenden Fundstücks. */
+    val note: String? = null,
+    val createdAt: Long,
+) {
+    companion object {
+        const val STATUS_PENDING = "pending"
+        /** `409 DUPLICATE_URL` — wartet auf «Trotzdem speichern»/«Verwerfen». */
+        const val STATUS_DUPLICATE = "duplicate"
+        /** Vom Server abgewiesen (4xx) — wartet auf «Erneut»/«Verwerfen». */
+        const val STATUS_FAILED = "failed"
+
+        const val STEP_CREATE = 0
+        const val STEP_IMAGE = 1
+        const val STEP_SCRAPE = 2
+    }
+}
+
+/**
+ * Offline vorgemerkte neue Idee (`POST /ideen`). Ideen sind kein Buchinhalt — diese
+ * Queue ist unabhängig von [PendingWriteEntity] und wird vom IdeenRepository
+ * abgespielt. [idempotencyKey] geht bei JEDEM Versuch als `Idempotency-Key` mit: eine
+ * verlorene Antwort führt beim Nachspielen nicht zu einer doppelten Idee.
+ *
+ * Ein Einfall fällt nie still weg: weist der Server das Anlegen ab, wird es einmal als
+ * Buch-Idee (ohne Anker) wiederholt; scheitert auch das, bleibt die Zeile mit
+ * [STATUS_STUCK] und Fehlercode liegen, bis der Nutzer sie erneut sendet, kopiert
+ * oder verwirft.
+ */
+@Entity(
+    tableName = "pending_ideas",
+    indices = [Index("bookId")],
+)
+data class PendingIdeaEntity(
+    @PrimaryKey(autoGenerate = true) val localId: Long = 0,
+    val bookId: Long,
+    val content: String,
+    val pageId: Long? = null,
+    val chapterId: Long? = null,
+    val idempotencyKey: String = UUID.randomUUID().toString(),
+    val createdAt: Long,
+    val status: String = STATUS_PENDING,
+    /** Fehlercode der Abweisung (`error_code` bzw. `HTTP nnn`), nur bei [STATUS_STUCK]. */
+    val error: String? = null,
+) {
+    companion object {
+        const val STATUS_PENDING = "pending"
+        const val STATUS_STUCK = "stuck"
+    }
+}
+
+/**
+ * Offline vorgemerkte Änderung an einer schon angelegten Idee: `PATCH /ideen/:id`
+ * ([patch] = JSON-Objekt der geänderten Felder, inkl. explizitem `null` für „zurück
+ * zur Buch-Idee") oder `DELETE`. Höchstens eine Zeile je Idee: eine weitere Änderung
+ * wird in [patch] zusammengeführt, ein Löschen ersetzt sie. [placeName] ist der
+ * Anzeigename eines neuen Orts, bis der Server antwortet.
+ */
+@Entity(
+    tableName = "pending_idea_changes",
+    indices = [Index("bookId"), Index(value = ["ideeId"], unique = true)],
+)
+data class PendingIdeaChangeEntity(
+    @PrimaryKey(autoGenerate = true) val localId: Long = 0,
+    val bookId: Long,
+    val ideeId: Long,
+    /** true = `DELETE` statt `PATCH`. */
+    val remove: Boolean = false,
+    val patch: String = "{}",
+    val placeName: String? = null,
+    val createdAt: Long,
+    val status: String = PendingIdeaEntity.STATUS_PENDING,
+    val error: String? = null,
+)
+
+/**
+ * Offline-Cache des Ideen-Boards (`GET ideen/board`): die letzte Antwort als JSON
+ * ([ch.schreibwerkstatt.mobile.data.net.ApiJson]), eine Zeile pro Buch. Bestätigte
+ * Anlagen/Änderungen patchen ihn direkt, damit das Board ohne Neuladen stimmt.
+ */
+@Entity(tableName = "ideen_cache")
+data class IdeenCacheEntity(
+    @PrimaryKey val bookId: Long,
+    val json: String,
+    /** Abrufzeitpunkt (epoch ms). */
+    val fetchedAt: Long,
+)

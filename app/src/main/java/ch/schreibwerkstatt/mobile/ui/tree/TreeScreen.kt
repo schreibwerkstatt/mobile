@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.TravelExplore
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -96,6 +97,7 @@ fun TreeScreen(
     onOpenPage: (pageId: Long, pageName: String) -> Unit,
     onOpenHistory: (pageId: Long, pageName: String) -> Unit,
     onOpenResearch: () -> Unit,
+    onOpenIdeen: () -> Unit,
 ) {
     val context = LocalContext.current
     val coordinator = remember(context) { context.locator.syncCoordinator }
@@ -174,6 +176,12 @@ fun TreeScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = onOpenIdeen) {
+                            Icon(
+                                Icons.Filled.Lightbulb,
+                                contentDescription = stringResource(R.string.ideen_title),
+                            )
+                        }
                         IconButton(onClick = onOpenResearch) {
                             Icon(
                                 Icons.Filled.TravelExplore,

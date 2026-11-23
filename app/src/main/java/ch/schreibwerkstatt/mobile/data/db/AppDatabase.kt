@@ -17,8 +17,12 @@ import java.util.UUID
         SyncCursorEntity::class,
         PendingWriteEntity::class,
         TreeCacheEntity::class,
+        ResearchOutboxEntity::class,
+        PendingIdeaEntity::class,
+        PendingIdeaChangeEntity::class,
+        IdeenCacheEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -28,6 +32,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun syncCursorDao(): SyncCursorDao
     abstract fun pendingWriteDao(): PendingWriteDao
     abstract fun treeCacheDao(): TreeCacheDao
+    abstract fun researchOutboxDao(): ResearchOutboxDao
+    abstract fun pendingIdeaDao(): PendingIdeaDao
+    abstract fun pendingIdeaChangeDao(): PendingIdeaChangeDao
+    abstract fun ideenCacheDao(): IdeenCacheDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -46,7 +54,7 @@ abstract class AppDatabase : RoomDatabase() {
                     // Migration-Objekt via .addMigrations(...) ergänzen (Schemas liegen
                     // exportiert unter app/schemas/ → mit MigrationTestHelper testbar).
                     // Nur ein Downgrade (Dev/Rollback) darf destruktiv neu aufsetzen.
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(*ALL_MIGRATIONS)
                     .fallbackToDestructiveMigrationOnDowngrade()
                     .build().also { instance = it }
             }
@@ -97,3 +105,43 @@ val MIGRATION_5_6 = object : Migration(5, 6) {
         )
     }
 }
+
+/**
+ * 6 → 7: Offline-Queues für Recherche-Erfassen (`research_outbox`), neue Ideen
+ * (`pending_ideas`) und Ideen-Änderungen (`pending_idea_changes`), dazu der
+ * Ideen-Board-Cache (`ideen_cache`). Alle starten leer.
+ */
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `research_outbox` (`localId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`bookId` INTEGER NOT NULL, `payload` TEXT NOT NULL, `targetId` INTEGER, `imagePath` TEXT, " +
+                "`imageMime` TEXT, `step` INTEGER NOT NULL, `status` TEXT NOT NULL, `note` TEXT, " +
+                "`createdAt` INTEGER NOT NULL)"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_research_outbox_bookId` ON `research_outbox` (`bookId`)")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `pending_ideas` (" +
+                "`localId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `bookId` INTEGER NOT NULL, " +
+                "`content` TEXT NOT NULL, `pageId` INTEGER, `chapterId` INTEGER, " +
+                "`idempotencyKey` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                "`status` TEXT NOT NULL, `error` TEXT)"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_pending_ideas_bookId` ON `pending_ideas` (`bookId`)")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `pending_idea_changes` (" +
+                "`localId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `bookId` INTEGER NOT NULL, " +
+                "`ideeId` INTEGER NOT NULL, `remove` INTEGER NOT NULL, `patch` TEXT NOT NULL, " +
+                "`placeName` TEXT, `createdAt` INTEGER NOT NULL, `status` TEXT NOT NULL, `error` TEXT)"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_pending_idea_changes_bookId` ON `pending_idea_changes` (`bookId`)")
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_pending_idea_changes_ideeId` ON `pending_idea_changes` (`ideeId`)")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `ideen_cache` (`bookId` INTEGER NOT NULL, `json` TEXT NOT NULL, " +
+                "`fetchedAt` INTEGER NOT NULL, PRIMARY KEY(`bookId`))"
+        )
+    }
+}
+
+/** Alle Migrationen in Reihenfolge — App und MigrationTest nutzen dieselbe Liste. */
+val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)

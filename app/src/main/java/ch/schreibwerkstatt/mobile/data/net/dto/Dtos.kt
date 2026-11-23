@@ -238,7 +238,13 @@ data class ResearchUrlDto(
 /**
  * Ein Recherche-Schnipsel. `pinned`/`archived` kommen als 0/1-Integer aus SQLite
  * (nicht als JSON-Boolean) → bewusst `Int`. Bild-/Dokument-Blobs werden hier nur
- * als `has_image`/`has_doc`-Flags reflektiert; die App lädt/erzeugt sie (noch) nicht.
+ * als `has_image`/`has_doc`-Flags reflektiert.
+ *
+ * **Zwei Antwortformen:** `GET research` liefert einem Device-Token die reduzierte
+ * Client-Form (`ResearchClientItem`: `id, kind, title, source, created_at, updated_at,
+ * body_snippet, urls`) — `body`, `pinned`, `tags`, `has_*` fehlen dort und stehen auf
+ * ihren Defaults. Anzeigen darum über [displayBody], das auf [body_snippet] zurückfällt.
+ * Die Antworten von `POST research` (und Upload/Scrape) tragen die volle Form.
  */
 @Serializable
 data class ResearchItemDto(
@@ -257,7 +263,13 @@ data class ResearchItemDto(
     val has_image: Boolean = false,
     val has_doc: Boolean = false,
     val doc_name: String? = null,
-)
+    /** Nur Client-Form: auf 200 Zeichen normalisierter Anriss von `body`. */
+    val body_snippet: String? = null,
+) {
+    /** Voller Text, sonst der Anriss der Client-Form; null, wenn beides leer ist. */
+    val displayBody: String?
+        get() = body?.takeIf { it.isNotBlank() } ?: body_snippet?.takeIf { it.isNotBlank() }
+}
 
 /**
  * Neues Recherche-Item anlegen (`POST research`). `book_id` Pflicht; mindestens
@@ -279,6 +291,28 @@ data class CreateResearchRequest(
     val source: String? = null,
     val urls: List<ResearchUrlDto> = emptyList(),
     val tags: List<String> = emptyList(),
+    /**
+     * Übersteuert `409 DUPLICATE_URL` (zwei Zitate aus derselben Seite sind zwei
+     * Fundstücke). Nur nach Rückfrage gesetzt; null geht nicht raus. Steht in
+     * docs/clients.md, fehlt aber im `ResearchCreateRequest`-Schema der openapi.json.
+     */
+    val allow_duplicate: Boolean? = null,
+)
+
+/** `POST research/{id}/scrape`: Titel/Text/Herkunft eines Links serverseitig nachladen. */
+@Serializable
+data class ResearchScrapeRequest(
+    /** true = belegte Felder ersetzen; die App füllt nur Leeres. */
+    val overwrite: Boolean? = null,
+)
+
+/** Antwort von `POST research/{id}/scrape`. */
+@Serializable
+data class ResearchScrapeResponse(
+    val item: ResearchItemDto? = null,
+    val filled: List<String> = emptyList(),
+    val skipped: List<String> = emptyList(),
+    val truncated: Boolean = false,
 )
 
 // ── /config (nur STT-/LanguageTool-relevanter Teil + Vertragsversion) ──────────
@@ -349,7 +383,12 @@ data class BundleManifestDto(
 data class ApiErrorDto(
     val error_code: String? = null,
     val error: String? = null,
-    val detail: String? = null,
+    /** String oder Objekt (z.B. `INSUFFICIENT_ROLE` → `{ actual, required }`). */
+    val detail: kotlinx.serialization.json.JsonElement? = null,
+    /** `409 DUPLICATE_URL`: Id des bestehenden Fundstücks. */
+    val existing_id: Long? = null,
+    /** Platzhalter der Meldung (z.B. `DUPLICATE_URL` → `{ existing_id, title }`). */
+    val params: kotlinx.serialization.json.JsonObject? = null,
 ) {
     val code: String? get() = error_code ?: error
 }

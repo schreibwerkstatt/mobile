@@ -11,13 +11,17 @@ import ch.schreibwerkstatt.mobile.data.net.NetworkClient
 import ch.schreibwerkstatt.mobile.data.prefs.SettingsStore
 import ch.schreibwerkstatt.mobile.data.prefs.TokenStore
 import ch.schreibwerkstatt.mobile.data.repo.ContentRepository
+import ch.schreibwerkstatt.mobile.data.repo.IdeenRepository
+import ch.schreibwerkstatt.mobile.data.repo.ResearchOutbox
 import ch.schreibwerkstatt.mobile.data.repo.ResearchRepository
 import ch.schreibwerkstatt.mobile.data.repo.SyncCoordinator
 import ch.schreibwerkstatt.mobile.editor.SpellcheckClient
+import ch.schreibwerkstatt.mobile.sync.CaptureFlushWorker
 import ch.schreibwerkstatt.mobile.update.UpdateManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * Schlanker manueller DI-Container. Hält die App-weiten Singletons; ViewModels
@@ -35,11 +39,25 @@ class ServiceLocator(context: Context) {
     val network: NetworkClient by lazy { NetworkClient(tokenStore, debug = BuildConfig.DEBUG) }
     val db: AppDatabase by lazy { AppDatabase.get(appContext) }
     val repository: ContentRepository by lazy { ContentRepository(db, network, settings) }
-    val researchRepository: ResearchRepository by lazy { ResearchRepository(network, settings) }
+    val researchOutbox: ResearchOutbox by lazy {
+        ResearchOutbox(db, network, settings, scheduleBackground = { CaptureFlushWorker.enqueue(appContext) })
+    }
+    val researchRepository: ResearchRepository by lazy {
+        ResearchRepository(network, settings, db, researchOutbox, appContext)
+    }
+    val ideenRepository: IdeenRepository by lazy {
+        IdeenRepository(db, network, settings, onQueued = { CaptureFlushWorker.enqueue(appContext) })
+    }
     val bundleManager: BundleManager by lazy { BundleManager(appContext, tokenStore) }
     val connectivity: ConnectivityObserver by lazy { ConnectivityObserver(appContext) }
     val syncCoordinator: SyncCoordinator by lazy {
-        SyncCoordinator(appContext, repository, connectivity, tokenStore, settings, applicationScope)
+        SyncCoordinator(
+            appContext, repository, connectivity, tokenStore, settings, applicationScope,
+            flushCaptures = {
+                ideenRepository.flushPending()
+                researchOutbox.flush()
+            },
+        )
     }
     val updateManager: UpdateManager by lazy { UpdateManager(appContext, applicationScope) }
 
@@ -60,6 +78,13 @@ class App : Application() {
         locator = ServiceLocator(this)
         // Auto-Flush der Pending-Write-Queue bei (wiederhergestellter) Verbindung.
         locator.syncCoordinator.start()
+        // Liegen gebliebenes Erfasstes (App vor dem Nachversand beendet, Token erneuert …)
+        // nachsenden lassen, sobald Netz da ist.
+        locator.applicationScope.launch {
+            if (locator.ideenRepository.hasPending() || locator.researchOutbox.hasPending()) {
+                CaptureFlushWorker.enqueue(this@App)
+            }
+        }
     }
 }
 

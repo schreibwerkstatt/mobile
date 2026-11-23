@@ -7,7 +7,11 @@ import ch.schreibwerkstatt.mobile.data.net.dto.ChapterNodeDto
 import ch.schreibwerkstatt.mobile.data.net.dto.ConfigDto
 import ch.schreibwerkstatt.mobile.data.net.dto.CreateChapterRequest
 import ch.schreibwerkstatt.mobile.data.net.dto.CreatePageRequest
+import ch.schreibwerkstatt.mobile.data.net.dto.CreateIdeeRequest
 import ch.schreibwerkstatt.mobile.data.net.dto.CreateResearchRequest
+import ch.schreibwerkstatt.mobile.data.net.dto.IdeeDeleteResponse
+import ch.schreibwerkstatt.mobile.data.net.dto.IdeeDto
+import ch.schreibwerkstatt.mobile.data.net.dto.IdeenBoardDto
 import ch.schreibwerkstatt.mobile.data.net.dto.PageConflictDto
 import ch.schreibwerkstatt.mobile.data.net.dto.PageDto
 import ch.schreibwerkstatt.mobile.data.net.dto.PageLockedDto
@@ -27,6 +31,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -252,7 +257,7 @@ class ContractFixturesTest {
     }
 
     @Test fun `research request is sent as a link with known fields`() {
-        // So, wie ResearchRepository.createLink es baut.
+        // So, wie ResearchRepository.capture es baut.
         val req = CreateResearchRequest(
             book_id = 1, kind = "link", title = "T", body = "B", source = "S",
             urls = listOf(ResearchUrlDto(url = "https://example.org", label = "L")), tags = listOf("x"),
@@ -261,6 +266,52 @@ class ContractFixturesTest {
         assertKnown(body, "ResearchCreateRequest", fixtures.getValue("research-create").requestBody)
         // Ohne `kind` legt der Server still eine Notiz an statt eines Links.
         assertEquals("link", body["kind"]?.jsonPrimitive?.content)
+        assertFalse("allow_duplicate geht nur nach Rückfrage raus", "allow_duplicate" in body)
+
+        // «Trotzdem speichern»: einziges Feld ausserhalb des Schemas, siehe UNDOCUMENTED_REQUEST_FIELDS.
+        val forced = encode(CreateResearchRequest.serializer(), req.copy(allow_duplicate = true))
+        val unknown = unknownFields(forced, schemaObject("ResearchCreateRequest"), null, "ResearchCreateRequest")
+        assertEquals(listOf("ResearchCreateRequest.allow_duplicate"), unknown)
+        assertTrue(UNDOCUMENTED_REQUEST_FIELDS.keys.containsAll(unknown))
+    }
+
+    @Test fun `research list in client form still shows the note via body_snippet`() {
+        val items = decode("research-list", ListSerializer(ResearchItemDto.serializer()))
+        val item = items.first()
+        assertNull("Client-Form trägt keinen body", item.body)
+        assertNotNull("Client-Form trägt body_snippet", item.body_snippet)
+        assertEquals(item.body_snippet, item.displayBody)
+        val created = decode("research-create", ResearchItemDto.serializer())
+        if (!created.body.isNullOrBlank()) assertEquals("volle Form: body gewinnt", created.body, created.displayBody)
+    }
+
+    @Test fun `ideen requests fields are known to the server`() {
+        // So, wie IdeenRepository es baut.
+        assertKnown(
+            encode(CreateIdeeRequest.serializer(), CreateIdeeRequest(book_id = 1, content = "c", page_id = 2)),
+            "IdeeCreateRequest", fixtures.getValue("idee-create").requestBody,
+        )
+        val patch = JsonObject(
+            mapOf("content" to JsonPrimitive("c"), "status" to JsonPrimitive("erledigt")) +
+                ch.schreibwerkstatt.mobile.data.repo.IdeenRepository.anchorBody(null, null)
+        )
+        assertKnown(patch, "IdeeUpdateRequest", fixtures.getValue("idee-update").requestBody)
+        // Der Replay-Schutz hängt am Header-Namen.
+        val headers = fixtures.getValue("idee-create").request?.get("headers")?.jsonObject
+        assertNotNull("idee-create ohne Idempotency-Key-Header", headers?.get("Idempotency-Key"))
+        val replay = decode("idee-create-replay", IdeeDto.serializer())
+        assertEquals(decode("idee-create", IdeeDto.serializer()).id, replay.id)
+    }
+
+    @Test fun `ideen board decodes stages, hint and links`() {
+        val b = decode("ideen-board", IdeenBoardDto.serializer())
+        assertTrue(b.stages.containsAll(listOf("offen", "erledigt")))
+        val idee = b.ideen.first()
+        assertNotNull(idee.check_hint)
+        assertFalse(idee.links.isEmpty())
+        assertEquals(404, fixtures.getValue("idee-not-found").status)
+        assertEquals("IDEE_NOT_FOUND", decode("idee-not-found", ApiErrorDto.serializer()).code)
+        assertEquals("CONTENT_TOO_LONG", decode("idee-content-too-long", ApiErrorDto.serializer()).code)
     }
 
     // ── Helfer ──────────────────────────────────────────────────────────────
@@ -332,6 +383,13 @@ class ContractFixturesTest {
             "chapter-create" to ChapterNodeDto.serializer(),
             "research-create" to ResearchItemDto.serializer(),
             "research-list" to ListSerializer(ResearchItemDto.serializer()),
+            "ideen-board" to IdeenBoardDto.serializer(),
+            "idee-create" to IdeeDto.serializer(),
+            "idee-create-replay" to IdeeDto.serializer(),
+            "idee-update" to IdeeDto.serializer(),
+            "idee-delete" to IdeeDeleteResponse.serializer(),
+            "idee-not-found" to ApiErrorDto.serializer(),
+            "idee-content-too-long" to ApiErrorDto.serializer(),
             "config" to ConfigDto.serializer(),
             "editor-bundle" to BundleManifestDto.serializer(),
             "auth-invalid-token" to ApiErrorDto.serializer(),
@@ -343,6 +401,17 @@ class ContractFixturesTest {
 
         val ERROR_FIXTURES = listOf(
             "auth-invalid-token", "scope-forbidden", "push-empty", "page-not-found", "editor-bundle-unsupported",
+            "idee-not-found", "idee-content-too-long",
+        )
+
+        /**
+         * Gesendete Felder, die der Server kennt, die aber im Request-Schema der
+         * openapi.json fehlen — mit Fundstelle. Jeder Eintrag ist ein offener Punkt fürs
+         * Mutterprojekt (Schema nachziehen), kein Freibrief.
+         */
+        val UNDOCUMENTED_REQUEST_FIELDS: Map<String, String> = mapOf(
+            "ResearchCreateRequest.allow_duplicate" to
+                "docs/clients.md (Fehlercodes Recherche-Board, DUPLICATE_URL) und routes/research.js — fehlt in ResearchCreateRequest",
         )
 
         /**

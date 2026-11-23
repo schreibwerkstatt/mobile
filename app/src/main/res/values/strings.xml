@@ -276,11 +276,30 @@
     <string name="research_save">Speichern</string>
     <string name="research_saved">Recherche gespeichert.</string>
     <string name="research_save_error">Speichern fehlgeschlagen: %1$s</string>
-    <string name="research_capture_hint">Wird im Recherche-Board des gewählten Buchs abgelegt (online).</string>
+    <string name="research_capture_hint">Wird im Recherche-Board des gewählten Buchs abgelegt. Ohne Verbindung wird es vorgemerkt und automatisch nachgesendet; zu einem Link ohne Notiz holt der Server Titel und Text.</string>
     <string name="research_books_unavailable">Keine Bücher verfügbar – die Buchliste konnte nicht geladen werden.</string>
     <string name="research_discard_title">Eingaben verwerfen?</string>
     <string name="research_discard_confirm">Verwerfen</string>
     <string name="research_open_failed">Link konnte nicht geöffnet werden.</string>
+    <string name="research_queued">Ohne Verbindung vorgemerkt – wird automatisch nachgesendet.</string>
+    <string name="research_url_invalid">Nur Web-Adressen (http/https) bis %1$d Zeichen.</string>
+    <string name="research_image_attached">Bild wird angehängt</string>
+    <string name="research_image_remove">Bild entfernen</string>
+    <string name="research_duplicate_title">Link schon erfasst</string>
+    <string name="research_duplicate_text">Dieser Link liegt im Buch schon an einem Recherche-Element. Trotzdem als neues Element speichern?</string>
+    <string name="research_duplicate_text_named">Dieser Link liegt im Buch schon an «%1$s». Trotzdem als neues Element speichern?</string>
+    <string name="research_duplicate_keep">Trotzdem speichern</string>
+    <string name="research_error_empty">Link, Titel oder Notiz angeben.</string>
+    <string name="research_error_image">Das Bild konnte nicht gelesen werden.</string>
+    <string name="research_error_image_large">Das Bild ist zu gross.</string>
+    <string name="research_error_rejected">Vom Server abgewiesen (%1$s).</string>
+    <string name="research_list_limited">Es werden die neuesten %1$d Elemente angezeigt. Ältere findest du im Web-Board.</string>
+    <string name="research_detail_snippet">Gekürzt – den vollen Text zeigt das Web-Board.</string>
+    <string name="research_queued_waiting">Wartet auf Verbindung</string>
+    <string name="research_queued_finishing">Gespeichert – Bild/Text folgen</string>
+    <string name="research_queued_duplicate">Link schon erfasst</string>
+    <string name="research_queued_duplicate_named">Link schon erfasst als «%1$s»</string>
+    <string name="research_queued_discard">Verwerfen</string>
 
     <!-- Sync-Status (Offline-/Queue-Banner) -->
     <string name="sync_offline">Offline – Änderungen werden lokal gespeichert</string>
@@ -297,6 +316,7 @@
     <string name="error_locked">Der Abschnitt ist gerade gesperrt.</string>
     <string name="error_not_found">Nicht gefunden – wurde es auf dem Server gelöscht?</string>
     <string name="error_unauthorized">Keine Berechtigung.</string>
+    <string name="error_read_only">Für dieses Buch hast du nur Leserechte.</string>
     <string name="error_bad_response">Unerwartete Antwort vom Server.</string>
     <string name="error_server">Serverfehler (HTTP %1$d).</string>
     <string name="error_unknown">Unerwarteter Fehler (%1$s).</string>

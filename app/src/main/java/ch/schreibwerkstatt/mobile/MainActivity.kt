@@ -14,6 +14,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ch.schreibwerkstatt.mobile.data.prefs.ThemeMode
+import ch.schreibwerkstatt.mobile.ideen.IdeaLaunch
+import ch.schreibwerkstatt.mobile.ideen.isIdeaShare
+import ch.schreibwerkstatt.mobile.ideen.parseIdeaLaunch
 import ch.schreibwerkstatt.mobile.ui.AppNav
 import ch.schreibwerkstatt.mobile.ui.research.SharedResearch
 import ch.schreibwerkstatt.mobile.ui.research.parseShareIntent
@@ -25,6 +28,10 @@ class MainActivity : ComponentActivity() {
     // reagieren kann. Wird vom Capture-Screen nach Speichern/Abbruch geleert.
     private var sharedResearch by mutableStateOf<SharedResearch?>(null)
 
+    // Einstieg ins Schnell-Erfassen einer Idee (Shortcut, Kachel, „Teilen → Als Idee").
+    // Gleiches Muster wie [sharedResearch]: Compose-State, vom Capture-Screen geleert.
+    private var ideaLaunch by mutableStateOf<IdeaLaunch?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -33,11 +40,14 @@ class MainActivity : ComponentActivity() {
         // Capture-Formular nach dem Speichern erneut öffnen. Ein noch nicht erledigter
         // Share überlebt stattdessen über den Instance-State.
         sharedResearch = if (savedInstanceState == null) {
-            parseShareIntent(intent)
+            researchShare(intent)
         } else {
-            savedInstanceState.getStringArray(STATE_SHARED)?.let { (url, title, note) ->
-                SharedResearch(url = url, title = title, note = note)
-            }
+            SharedResearch.fromArray(savedInstanceState.getStringArray(STATE_SHARED))
+        }
+        ideaLaunch = if (savedInstanceState == null) {
+            parseIdeaLaunch(intent)
+        } else {
+            savedInstanceState.getString(STATE_IDEA)?.let { IdeaLaunch(it) }
         }
         val serviceLocator = locator
         setContent {
@@ -62,7 +72,10 @@ class MainActivity : ComponentActivity() {
                 AppNav(
                     locator = serviceLocator,
                     sharedResearch = sharedResearch,
-                    onSharedConsumed = { sharedResearch = null },
+                    // Nur den eigenen Share leeren — ein inzwischen neuer bleibt stehen.
+                    onSharedConsumed = { id -> if (sharedResearch?.id == id) sharedResearch = null },
+                    ideaLaunch = ideaLaunch,
+                    onIdeaLaunchConsumed = { ideaLaunch = null },
                 )
             }
         }
@@ -71,18 +84,25 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         sharedResearch?.let {
-            outState.putStringArray(STATE_SHARED, arrayOf(it.url, it.title, it.note))
+            outState.putStringArray(STATE_SHARED, it.toArray())
         }
+        ideaLaunch?.let { outState.putString(STATE_IDEA, it.text) }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        parseShareIntent(intent)?.let { sharedResearch = it }
+        researchShare(intent)?.let { sharedResearch = it }
+        parseIdeaLaunch(intent)?.let { ideaLaunch = it }
     }
 
+    /** Share als Recherche — ausser er kam über den Alias „Als Idee". */
+    private fun researchShare(intent: Intent?): SharedResearch? =
+        if (isIdeaShare(intent)) null else parseShareIntent(intent)
+
     private companion object {
-        const val STATE_SHARED = "shared_research"
+        const val STATE_SHARED = "shared_research_v2"
+        const val STATE_IDEA = "idea_launch"
         // Navigationsleisten-Scrims wie die Defaults von enableEdgeToEdge().
         val LIGHT_SCRIM = Color.argb(0xe6, 0xFF, 0xFF, 0xFF)
         val DARK_SCRIM = Color.argb(0x80, 0x1b, 0x1b, 0x1b)

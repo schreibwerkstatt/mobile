@@ -4,6 +4,7 @@ import android.content.res.Resources
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import ch.schreibwerkstatt.mobile.R
+import ch.schreibwerkstatt.mobile.data.net.ApiException
 import kotlinx.serialization.SerializationException
 import retrofit2.HttpException
 import java.io.IOException
@@ -19,6 +20,8 @@ sealed interface UiError {
     data object Locked : UiError
     data object NotFound : UiError
     data object Unauthorized : UiError
+    /** Nur Leserechte auf dem Buch (`403 INSUFFICIENT_ROLE`). */
+    data object ReadOnly : UiError
     data object BadResponse : UiError
     data class Server(val code: Int) : UiError
     /** Unbekannter Fehler; [detail] nur als technischer Zusatz (Klassenname, wenn keine Message). */
@@ -28,6 +31,11 @@ sealed interface UiError {
 private val HTTP_IN_MESSAGE = Regex("""\bHTTP (\d{3})\b""")
 
 fun Throwable.toUiError(): UiError = when (this) {
+    is ApiException -> when (code) {
+        "INSUFFICIENT_ROLE" -> UiError.ReadOnly
+        "SHUTTING_DOWN" -> UiError.Offline
+        else -> httpError(status)
+    }
     is HttpException -> httpError(code())
     is IOException -> UiError.Offline
     is SerializationException -> UiError.BadResponse
@@ -48,6 +56,7 @@ fun UiError.message(res: Resources): String = when (this) {
     UiError.Locked -> res.getString(R.string.error_locked)
     UiError.NotFound -> res.getString(R.string.error_not_found)
     UiError.Unauthorized -> res.getString(R.string.error_unauthorized)
+    UiError.ReadOnly -> res.getString(R.string.error_read_only)
     UiError.BadResponse -> res.getString(R.string.error_bad_response)
     is UiError.Server -> res.getString(R.string.error_server, code)
     is UiError.Unknown -> res.getString(R.string.error_unknown, detail)

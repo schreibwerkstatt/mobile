@@ -38,6 +38,47 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
+            <!-- Geteilte Bilder als Recherche-Element (Bild-Fundstück) erfassen. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <!-- Launcher-Shortcut „Neue Idee" (res/xml/shortcuts.xml). -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- Zweites Ziel im Teilen-Menü: geteilten Text als Idee festhalten statt als
+             Recherche. Alias auf dieselbe Activity; MainActivity unterscheidet am
+             Component-Namen. -->
+        <activity-alias
+            android:name=".ShareAsIdea"
+            android:exported="true"
+            android:icon="@drawable/ic_idea"
+            android:label="@string/ideen_share_label"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- Schnelleinstellungs-Kachel „Idee": öffnet das Schnell-Erfassen. -->
+        <service
+            android:name=".ideen.IdeaTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_idea"
+            android:label="@string/ideen_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="false" />
+        </service>
     </application>
 </manifest>

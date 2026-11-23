@@ -7,7 +7,10 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import ch.schreibwerkstatt.mobile.ServiceLocator
 import ch.schreibwerkstatt.mobile.data.db.BookEntity
+import android.net.Uri
+import ch.schreibwerkstatt.mobile.data.repo.CaptureOutcome
 import ch.schreibwerkstatt.mobile.data.repo.ContentRepository
+import ch.schreibwerkstatt.mobile.data.repo.ResearchDraft
 import ch.schreibwerkstatt.mobile.data.repo.ResearchRepository
 import ch.schreibwerkstatt.mobile.ui.components.UiError
 import ch.schreibwerkstatt.mobile.ui.components.toUiError
@@ -20,9 +23,10 @@ import kotlinx.coroutines.launch
 
 /**
  * ViewModel des Recherche-Capture-Formulars. Liefert die (gecachte) Buchliste für
- * die Auswahl und speichert das Item **online** über [ResearchRepository]. Die
- * Buchliste kommt aus dem Room-Cache von [ContentRepository] und wird beim Öffnen
- * still aufgefrischt (der Share kann aus jeder App kommen, auch nach Kaltstart).
+ * die Auswahl und erfasst das Item über [ResearchRepository] — vorgemerkt in der
+ * Outbox und sofort gesendet; ohne Netz geht es später raus. Die Buchliste kommt aus
+ * dem Room-Cache von [ContentRepository] und wird beim Öffnen still aufgefrischt (der
+ * Share kann aus jeder App kommen, auch nach Kaltstart).
  */
 class ResearchCaptureViewModel(
     private val content: ContentRepository,
@@ -63,15 +67,43 @@ class ResearchCaptureViewModel(
         }
     }
 
-    fun save(bookId: Long, url: String, title: String, note: String) {
+    fun save(bookId: Long, url: String, title: String, note: String, imageUri: String?, imageMime: String?) {
         if (_saving.value) return
         viewModelScope.launch {
             _saving.value = true
-            research.createLink(bookId, url = normalizeResearchUrl(url), title = title, note = note)
-                .onSuccess { _result.value = CaptureResult.Saved }
-                .onFailure { _result.value = CaptureResult.Error(it.toUiError()) }
+            val outcome = runCatching {
+                research.capture(
+                    ResearchDraft(
+                        bookId = bookId,
+                        url = normalizeResearchUrl(url),
+                        title = title,
+                        note = note,
+                        imageUri = imageUri?.let(Uri::parse),
+                        imageMime = imageMime,
+                    )
+                )
+            }
+            _result.value = outcome.fold(::toResult) { CaptureResult.Error(it.toUiError()) }
             _saving.value = false
         }
+    }
+
+    /** Antwort auf die Dubletten-Rückfrage: [keep] = trotzdem speichern, sonst verwerfen (Formular bleibt). */
+    fun resolveDuplicate(localId: Long, keep: Boolean) {
+        if (_saving.value) return
+        viewModelScope.launch {
+            _saving.value = true
+            val outcome = runCatching { research.resolveDuplicate(localId, keep) }
+            _result.value = outcome.fold({ it?.let(::toResult) }) { CaptureResult.Error(it.toUiError()) }
+            _saving.value = false
+        }
+    }
+
+    private fun toResult(o: CaptureOutcome): CaptureResult = when (o) {
+        CaptureOutcome.Saved -> CaptureResult.Saved
+        CaptureOutcome.Queued -> CaptureResult.Queued
+        is CaptureOutcome.Duplicate -> CaptureResult.Duplicate(o.localId, o.existingTitle)
+        is CaptureOutcome.Rejected -> CaptureResult.Rejected(o.code)
     }
 
     fun consumeResult() { _result.value = null }
@@ -85,5 +117,11 @@ class ResearchCaptureViewModel(
 
 sealed interface CaptureResult {
     data object Saved : CaptureResult
+    /** Ohne Verbindung vorgemerkt — geht automatisch raus. */
+    data object Queued : CaptureResult
+    /** Link schon im Buch erfasst — Rückfrage. */
+    data class Duplicate(val localId: Long, val existingTitle: String?) : CaptureResult
+    /** Vom Server abgewiesen (`error_code`) — Formular bleibt offen. */
+    data class Rejected(val code: String) : CaptureResult
     data class Error(val error: UiError) : CaptureResult
 }

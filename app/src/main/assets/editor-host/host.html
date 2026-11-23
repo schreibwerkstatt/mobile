@@ -271,8 +271,16 @@
         },
         // Trennlinie (<hr>) hinter dem aktuellen Block einfügen + Schreib-Slot
         // (<p>) dahinter. <hr> übersteht den Server-Cleaner (_STRUCTURAL_LEAF).
+        // Bundles mit `handle.insertHr` (editorApi 1, additiv) machen das selbst
+        // inkl. Undo-Schritt und `input`; ältere bekommen die DOM-Mutation hier.
         insertHr() {
           try {
+            const h = window.__swHandle;
+            if (h && typeof h.insertHr === 'function') {
+              activeEditor()?.focus();
+              h.insertHr();
+              return;
+            }
             const el = activeEditor();
             if (!el) return;
             el.focus();

@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ideen_title">Ideas</string>
+    <string name="ideen_add">New idea</string>
+    <string name="ideen_empty">No ideas yet</string>
+    <string name="ideen_empty_hint">Capture notions, scenes and to-dos – even offline.</string>
+    <string name="ideen_load_failed">Ideas could not be loaded. Pull down to refresh.</string>
+    <string name="ideen_load_error">Loading failed: %1$s</string>
+
+    <string name="ideen_status_offen">Open</string>
+    <string name="ideen_status_in_arbeit">In progress</string>
+    <string name="ideen_status_erledigt">Done</string>
+    <string name="ideen_status_verworfen">Discarded</string>
+    <string name="ideen_section_count">%1$s · %2$d</string>
+    <string name="ideen_show_closed">Show done and discarded</string>
+
+    <string name="ideen_anchor_book">Whole book</string>
+    <string name="ideen_anchor_chapter">Chapter: %1$s</string>
+    <string name="ideen_anchor_page">Section: %1$s</string>
+    <string name="ideen_has_hint">Possibly done</string>
+
+    <string name="ideen_pending_waiting">Waiting for connection</string>
+    <string name="ideen_pending_stuck">Not saved (%1$s)</string>
+    <string name="ideen_pending_retry">Send again</string>
+    <string name="ideen_pending_copy">Copy</string>
+    <string name="ideen_pending_discard">Discard</string>
+    <string name="ideen_pending_discard_confirm">This idea was never saved. Discard it anyway?</string>
+    <string name="ideen_copied">Text copied</string>
+
+    <string name="ideen_capture_title">Capture idea</string>
+    <string name="ideen_capture_hint">What came to mind?</string>
+    <string name="ideen_capture_book">Book</string>
+    <string name="ideen_capture_book_placeholder">Choose book</string>
+    <string name="ideen_capture_place">Place</string>
+    <string name="ideen_save">Save</string>
+    <string name="ideen_saved">Idea saved</string>
+    <string name="ideen_queued">Offline – queued, will be sent automatically</string>
+    <string name="ideen_stuck">The server rejected the idea (%1$s). It is waiting under “Ideas”.</string>
+    <string name="ideen_too_long">Too long (max. %1$d characters)</string>
+    <string name="ideen_char_count">%1$d / %2$d</string>
+    <string name="ideen_no_books">No books loaded yet. Open the app once while online.</string>
+
+    <string name="ideen_dictate">Dictate</string>
+    <string name="ideen_dictate_stop">Stop dictation</string>
+    <string name="ideen_dictate_transcribing">Transcribing …</string>
+    <string name="ideen_dictate_error">Dictation failed: %1$s</string>
+    <string name="ideen_mic_denied">Dictation needs microphone permission.</string>
+
+    <string name="ideen_edit_title">Edit idea</string>
+    <string name="ideen_edit_status">Stage</string>
+    <string name="ideen_edit_place">Place</string>
+    <string name="ideen_edit_move">Change place</string>
+    <string name="ideen_edit_delete">Delete</string>
+    <string name="ideen_edit_delete_confirm">Delete this idea permanently?</string>
+    <string name="ideen_edit_error">Saving failed: %1$s</string>
+    <string name="ideen_edit_closed_move">Done or discarded ideas cannot be moved.</string>
+    <string name="ideen_hint_title">Check hint</string>
+    <string name="ideen_change_waiting">Change waiting for connection</string>
+    <string name="ideen_change_stuck">Change rejected (%1$s)</string>
+    <string name="ideen_change_delete_stuck">Deletion rejected (%1$s)</string>
+    <string name="ideen_change_discard">Discard change</string>
+    <string name="ideen_for_section">Ideas for this section</string>
+    <string name="ideen_filter_section">Section «%1$s»</string>
+    <string name="ideen_filter_book">Whole book</string>
+    <string name="ideen_empty_section">No ideas for this section yet</string>
+    <string name="ideen_empty_section_hint">Tap “+” to attach an idea here.</string>
+
+    <string name="ideen_pick_place">Choose place</string>
+    <string name="ideen_pick_loading">Loading outline …</string>
+    <string name="ideen_pick_error">Outline unavailable (offline?).</string>
+    <string name="ideen_pick_filter">Search chapter or section</string>
+
+    <string name="action_delete_ideen">Delete</string>
+
+    <string name="ideen_shortcut_short">New idea</string>
+    <string name="ideen_shortcut_long">Capture idea</string>
+    <string name="ideen_share_label">As idea</string>
+    <string name="ideen_tile_label">Idea</string>
+</resources>

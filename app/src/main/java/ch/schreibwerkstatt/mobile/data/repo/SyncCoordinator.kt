@@ -19,7 +19,8 @@ import kotlinx.coroutines.launch
  * ViewModels). Aufgaben:
  *
  *  1. **Auto-Flush:** Sobald die Verbindung (wieder) da ist und ein Token vorliegt,
- *     wird die Pending-Write-Queue best-effort geflusht ([ContentRepository.flushPending]).
+ *     wird die Pending-Write-Queue best-effort geflusht ([ContentRepository.flushPending]),
+ *     ebenso das offline Erfasste (Ideen, Recherche — [flushCaptures]).
  *  2. **Periodischer Pull:** Registriert/entfernt den [PeriodicSyncWorker]
  *     (WorkManager, stündlich) je nach Nutzer-Einstellung `backgroundSync`.
  *  3. **Manueller Voll-Sync:** [syncAllNow] stösst Push + Pull über alle Bücher an
@@ -37,6 +38,8 @@ class SyncCoordinator(
     private val tokenStore: TokenStore,
     private val settings: SettingsStore,
     private val scope: CoroutineScope,
+    /** Erfasstes nachsenden (Ideen + Recherche), ausserhalb der Abschnitts-Queue. */
+    private val flushCaptures: suspend () -> Unit = {},
 ) {
     val online: StateFlow<Boolean> =
         connectivity.online.stateIn(scope, SharingStarted.Eagerly, true)
@@ -72,6 +75,7 @@ class SyncCoordinator(
     fun flushNow() {
         if (tokenStore.token() == null) return
         scope.launch { repository.flushPending() }
+        scope.launch { runCatching { flushCaptures() } }
     }
 
     /**

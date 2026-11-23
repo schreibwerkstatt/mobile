@@ -182,3 +182,113 @@ interface TreeCacheDao {
     @Query("DELETE FROM tree_cache WHERE bookId NOT IN (:keepIds)")
     suspend fun deleteMissing(keepIds: List<Long>)
 }
+
+@Dao
+interface ResearchOutboxDao {
+    @Insert
+    suspend fun insert(row: ResearchOutboxEntity): Long
+
+    @Query("SELECT * FROM research_outbox WHERE localId = :localId")
+    suspend fun byId(localId: Long): ResearchOutboxEntity?
+
+    @Query("SELECT * FROM research_outbox WHERE status = 'pending' ORDER BY createdAt ASC, localId ASC")
+    suspend fun pending(): List<ResearchOutboxEntity>
+
+    @Query("SELECT * FROM research_outbox WHERE bookId = :bookId ORDER BY createdAt DESC, localId DESC")
+    fun observeForBook(bookId: Long): Flow<List<ResearchOutboxEntity>>
+
+    @Query("SELECT COUNT(*) FROM research_outbox WHERE status = 'pending'")
+    suspend fun pendingCount(): Int
+
+    @Query("UPDATE research_outbox SET status = :status, note = :note WHERE localId = :localId")
+    suspend fun setStatus(localId: Long, status: String, note: String?)
+
+    @Query("UPDATE research_outbox SET targetId = :targetId, step = :step WHERE localId = :localId")
+    suspend fun advance(localId: Long, targetId: Long?, step: Int)
+
+    @Query("UPDATE research_outbox SET payload = :payload, status = 'pending', note = NULL WHERE localId = :localId")
+    suspend fun retryWith(localId: Long, payload: String)
+
+    @Query("DELETE FROM research_outbox WHERE localId = :localId")
+    suspend fun delete(localId: Long)
+}
+
+@Dao
+interface PendingIdeaDao {
+    @Insert
+    suspend fun insert(idea: PendingIdeaEntity): Long
+
+    @Query("SELECT * FROM pending_ideas WHERE status = :status ORDER BY createdAt ASC, localId ASC")
+    suspend fun byStatus(status: String = PendingIdeaEntity.STATUS_PENDING): List<PendingIdeaEntity>
+
+    @Query("SELECT * FROM pending_ideas WHERE localId = :localId")
+    suspend fun byId(localId: Long): PendingIdeaEntity?
+
+    @Query("SELECT * FROM pending_ideas WHERE bookId = :bookId ORDER BY createdAt DESC, localId DESC")
+    fun observeForBook(bookId: Long): Flow<List<PendingIdeaEntity>>
+
+    @Query("SELECT COUNT(*) FROM pending_ideas")
+    fun observeCount(): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM pending_ideas WHERE status = :status")
+    suspend fun count(status: String = PendingIdeaEntity.STATUS_PENDING): Int
+
+    /** Abgewiesenes Anlegen nochmals als Buch-Idee versuchen (Anker fällt). */
+    @Query("UPDATE pending_ideas SET pageId = NULL, chapterId = NULL WHERE localId = :localId")
+    suspend fun dropAnchor(localId: Long)
+
+    @Query("UPDATE pending_ideas SET status = :status, error = :error WHERE localId = :localId")
+    suspend fun setStatus(localId: Long, status: String, error: String?)
+
+    @Query("UPDATE pending_ideas SET content = :content WHERE localId = :localId")
+    suspend fun setContent(localId: Long, content: String)
+
+    @Query("DELETE FROM pending_ideas WHERE localId = :localId")
+    suspend fun delete(localId: Long)
+}
+
+@Dao
+interface PendingIdeaChangeDao {
+    @Upsert
+    suspend fun upsert(change: PendingIdeaChangeEntity): Long
+
+    @Query("SELECT * FROM pending_idea_changes WHERE ideeId = :ideeId")
+    suspend fun forIdee(ideeId: Long): PendingIdeaChangeEntity?
+
+    @Query("SELECT * FROM pending_idea_changes WHERE status = 'pending' ORDER BY createdAt ASC, localId ASC")
+    suspend fun pending(): List<PendingIdeaChangeEntity>
+
+    @Query("SELECT * FROM pending_idea_changes WHERE bookId = :bookId")
+    fun observeForBook(bookId: Long): Flow<List<PendingIdeaChangeEntity>>
+
+    @Query("SELECT COUNT(*) FROM pending_idea_changes WHERE status = 'pending'")
+    suspend fun pendingCount(): Int
+
+    @Query("UPDATE pending_idea_changes SET status = :status, error = :error WHERE localId = :localId")
+    suspend fun setStatus(localId: Long, status: String, error: String?)
+
+    /**
+     * Nur löschen/markieren, wenn die Zeile noch dem Gesendeten entspricht — wurde
+     * währenddessen eine weitere Änderung hineingeführt, bleibt sie für den nächsten Lauf.
+     */
+    @Query("DELETE FROM pending_idea_changes WHERE localId = :localId AND patch = :patch AND remove = :remove")
+    suspend fun deleteIfUnchanged(localId: Long, patch: String, remove: Boolean): Int
+
+    @Query("UPDATE pending_idea_changes SET status = :status, error = :error WHERE localId = :localId AND patch = :patch AND remove = :remove")
+    suspend fun setStatusIfUnchanged(localId: Long, patch: String, remove: Boolean, status: String, error: String?): Int
+
+    @Query("DELETE FROM pending_idea_changes WHERE localId = :localId")
+    suspend fun delete(localId: Long)
+}
+
+@Dao
+interface IdeenCacheDao {
+    @Query("SELECT * FROM ideen_cache WHERE bookId = :bookId")
+    suspend fun byBook(bookId: Long): IdeenCacheEntity?
+
+    @Query("SELECT * FROM ideen_cache WHERE bookId = :bookId")
+    fun observe(bookId: Long): Flow<IdeenCacheEntity?>
+
+    @Upsert
+    suspend fun upsert(entry: IdeenCacheEntity)
+}

@@ -55,7 +55,7 @@ class MigrationTest {
         }
 
         val db = Room.databaseBuilder(ctx, AppDatabase::class.java, dbName)
-            .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).allowMainThreadQueries().build()
+            .addMigrations(*ALL_MIGRATIONS).allowMainThreadQueries().build()
         try {
             val a = db.pendingWriteDao().latestForPage(10)!!
             val b = db.pendingWriteDao().latestForPage(20)!!
@@ -92,7 +92,7 @@ class MigrationTest {
         }
 
         val db = Room.databaseBuilder(ctx, AppDatabase::class.java, dbName)
-            .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).allowMainThreadQueries().build()
+            .addMigrations(*ALL_MIGRATIONS).allowMainThreadQueries().build()
         try {
             val page = db.pageDao().byId(10)!!
             assertEquals("<p>lokal</p>", page.html)
@@ -126,7 +126,7 @@ class MigrationTest {
         }
 
         val db = Room.databaseBuilder(ctx, AppDatabase::class.java, dbName)
-            .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).allowMainThreadQueries().build()
+            .addMigrations(*ALL_MIGRATIONS).allowMainThreadQueries().build()
         try {
             assertEquals("<p>basis</p>", db.pageDao().byId(10)!!.baseHtml)
             assertEquals("<p>basis</p>", db.pendingWriteDao().latestForPage(10)!!.baseHtml)
@@ -134,6 +134,36 @@ class MigrationTest {
 
             db.treeCacheDao().upsert(TreeCacheEntity(bookId = 1, json = "{}", fetchedAt = 5))
             assertEquals("{}", db.treeCacheDao().byBook(1)!!.json)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test fun `6 to 7 keeps the pending queue and adds the research and ideen queues`() = runTest {
+        createFromSchema(6).use { db ->
+            db.execSQL(
+                "INSERT INTO pending_writes (pageId, bookId, html, deviceId, createdAt, baseUpdatedAt, status, note, saveId, ownSaveIds, sentAt, baseHtml) " +
+                    "VALUES (10, 1, '<p>lokal</p>', 'dev', 1, 't0', 'pending', NULL, '6f1c2b9e-0000-4000-8000-0000000000aa', '[]', NULL, '<p>basis</p>')"
+            )
+        }
+
+        val db = Room.databaseBuilder(ctx, AppDatabase::class.java, dbName)
+            .addMigrations(*ALL_MIGRATIONS).allowMainThreadQueries().build()
+        try {
+            assertEquals("<p>lokal</p>", db.pendingWriteDao().latestForPage(10)!!.html)
+            assertTrue(db.researchOutboxDao().pending().isEmpty())
+            assertEquals(0, db.pendingIdeaDao().count())
+            assertTrue(db.pendingIdeaChangeDao().pending().isEmpty())
+            assertNull(db.ideenCacheDao().byBook(1))
+
+            val id = db.pendingIdeaDao().insert(PendingIdeaEntity(bookId = 1, content = "Einfall", createdAt = 1))
+            assertEquals(PendingIdeaEntity.STATUS_PENDING, db.pendingIdeaDao().byId(id)!!.status)
+            db.researchOutboxDao().insert(ResearchOutboxEntity(bookId = 1, payload = "{}", createdAt = 1))
+            assertEquals(1, db.researchOutboxDao().pendingCount())
+            db.pendingIdeaChangeDao().upsert(PendingIdeaChangeEntity(bookId = 1, ideeId = 5, createdAt = 1))
+            assertEquals(5L, db.pendingIdeaChangeDao().pending().single().ideeId)
+            db.ideenCacheDao().upsert(IdeenCacheEntity(bookId = 1, json = "{}", fetchedAt = 5))
+            assertEquals("{}", db.ideenCacheDao().byBook(1)!!.json)
         } finally {
             db.close()
         }

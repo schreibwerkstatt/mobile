@@ -61,7 +61,14 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import ch.schreibwerkstatt.mobile.R
+import ch.schreibwerkstatt.mobile.data.db.ResearchOutboxEntity
+import ch.schreibwerkstatt.mobile.data.net.ResearchApi
 import ch.schreibwerkstatt.mobile.data.net.dto.ResearchItemDto
+import ch.schreibwerkstatt.mobile.data.repo.QueuedResearch
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.saveable.rememberSaveable
 import ch.schreibwerkstatt.mobile.data.net.dto.ResearchUrlDto
 import ch.schreibwerkstatt.mobile.locator
 import ch.schreibwerkstatt.mobile.ui.components.formatServerTime
@@ -89,13 +96,15 @@ fun ResearchListScreen(
     val loaded by vm.loaded.collectAsStateWithLifecycle()
     val error by vm.error.collectAsStateWithLifecycle()
     val loadFailed by vm.loadFailed.collectAsStateWithLifecycle()
+    val queued by vm.queued.collectAsStateWithLifecycle()
 
     // Bei jedem Sichtbarwerden neu laden — auch nach der Rückkehr aus „+ Erfassen",
     // sonst fehlt das gerade gespeicherte Element (das VM lebt im Backstack weiter).
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.refresh() }
     val snackbarHostState = remember { SnackbarHostState() }
-    // Ausgewähltes Element für die Detail-Ansicht (Klick auf eine Zeile).
-    var detail by remember { mutableStateOf<ResearchItemDto?>(null) }
+    // Ausgewähltes Element für die Detail-Ansicht (Klick auf eine Zeile) — als Id,
+    // damit die offene Ansicht eine Drehung übersteht.
+    var detailId by rememberSaveable { mutableStateOf<Long?>(null) }
 
     val errorTemplate = stringResource(R.string.research_load_error)
     LaunchedEffect(error) {
@@ -137,7 +146,7 @@ fun ResearchListScreen(
         ) {
             // Fehler- und Leerzustand als scrollbare Liste: Pull-to-Refresh reagiert nur
             // auf scrollbaren Inhalt.
-            if (items.isEmpty() && loaded && loadFailed) {
+            if (items.isEmpty() && queued.isEmpty() && loaded && loadFailed) {
                 CenteredScrollable {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -154,7 +163,7 @@ fun ResearchListScreen(
                         }
                     }
                 }
-            } else if (items.isEmpty() && loaded) {
+            } else if (items.isEmpty() && queued.isEmpty() && loaded) {
                 CenteredScrollable {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -184,20 +193,41 @@ fun ResearchListScreen(
                     Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 88.dp),
                 ) {
-                    items(items, key = { it.id }) { item ->
-                        ResearchRow(item, onClick = { detail = item })
+                    items(queued, key = { "q${it.localId}" }) { q ->
+                        QueuedRow(
+                            q,
+                            onKeep = { vm.keepDuplicate(q.localId) },
+                            onRetry = { vm.retryQueued(q.localId) },
+                            onDiscard = { vm.discardQueued(q.localId) },
+                        )
                         HorizontalDivider()
+                    }
+                    items(items, key = { it.id }) { item ->
+                        ResearchRow(item, onClick = { detailId = item.id })
+                        HorizontalDivider()
+                    }
+                    // Der Server liefert höchstens LIST_LIMIT — ältere fehlen dann hier.
+                    if (items.size >= ResearchApi.LIST_LIMIT) {
+                        item(key = "limit") {
+                            Text(
+                                stringResource(R.string.research_list_limited, ResearchApi.LIST_LIMIT),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            )
+                        }
                     }
                 }
             }
         }
     }
 
-    detail?.let { item ->
+    items.firstOrNull { it.id == detailId }?.let { item ->
         ResearchDetailSheet(
             item = item,
             onOpenUrl = onOpenUrl,
-            onDismiss = { detail = null },
+            onDismiss = { detailId = null },
         )
     }
 }
@@ -212,7 +242,7 @@ private fun ResearchDetailSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val title = item.title?.takeIf { it.isNotBlank() }
         ?: item.urls.firstOrNull()?.url
-        ?: item.body?.takeIf { it.isNotBlank() }
+        ?: item.displayBody
         ?: stringResource(R.string.research_untitled)
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
@@ -244,9 +274,17 @@ private fun ResearchDetailSheet(
                 }
             }
 
-            item.body?.takeIf { it.isNotBlank() }?.let { body ->
+            item.displayBody?.let { body ->
                 DetailSection(stringResource(R.string.research_detail_note)) {
                     Text(body, style = MaterialTheme.typography.bodyLarge)
+                    // Nur der Anriss (Client-Form ohne `body`): sagen, dass es mehr geben kann.
+                    if (item.body.isNullOrBlank() && body.endsWith("…")) {
+                        Text(
+                            stringResource(R.string.research_detail_snippet),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 
@@ -367,7 +405,7 @@ private fun ResearchRow(item: ResearchItemDto, onClick: () -> Unit) {
     val firstUrl = item.urls.firstOrNull()?.url
     val displayTitle = item.title?.takeIf { it.isNotBlank() }
         ?: firstUrl
-        ?: item.body?.takeIf { it.isNotBlank() }
+        ?: item.displayBody
         ?: stringResource(R.string.research_untitled)
 
     Column(
@@ -412,7 +450,7 @@ private fun ResearchRow(item: ResearchItemDto, onClick: () -> Unit) {
                 )
             }
         }
-        item.body?.takeIf { it.isNotBlank() }?.let {
+        item.displayBody?.let {
             Text(
                 it,
                 style = MaterialTheme.typography.bodyMedium,
@@ -428,6 +466,74 @@ private fun ResearchRow(item: ResearchItemDto, onClick: () -> Unit) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/** Vorgemerkte Erfassung: wartet, Dublette (Rückfrage) oder abgewiesen. */
+@Composable
+private fun QueuedRow(q: QueuedResearch, onKeep: () -> Unit, onRetry: () -> Unit, onDiscard: () -> Unit) {
+    val context = LocalContext.current
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            q.title?.takeIf { it.isNotBlank() } ?: q.url ?: q.note ?: stringResource(R.string.research_untitled),
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        q.url?.takeIf { q.title != null }?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        val (icon, text, isError) = when (q.status) {
+            ResearchOutboxEntity.STATUS_DUPLICATE -> Triple(
+                Icons.Filled.ErrorOutline,
+                q.serverNote?.let { stringResource(R.string.research_queued_duplicate_named, it) }
+                    ?: stringResource(R.string.research_queued_duplicate),
+                true,
+            )
+            ResearchOutboxEntity.STATUS_FAILED -> Triple(
+                Icons.Filled.ErrorOutline,
+                rejectionText(context.resources, q.serverNote.orEmpty()),
+                true,
+            )
+            else -> Triple(
+                Icons.Filled.CloudOff,
+                stringResource(if (q.created) R.string.research_queued_finishing else R.string.research_queued_waiting),
+                false,
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                icon,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp),
+            )
+        }
+        when (q.status) {
+            ResearchOutboxEntity.STATUS_DUPLICATE -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onKeep) { Text(stringResource(R.string.research_duplicate_keep)) }
+                TextButton(onClick = onDiscard) { Text(stringResource(R.string.research_queued_discard)) }
+            }
+            ResearchOutboxEntity.STATUS_FAILED -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
+                TextButton(onClick = onDiscard) { Text(stringResource(R.string.research_queued_discard)) }
+            }
         }
     }
 }

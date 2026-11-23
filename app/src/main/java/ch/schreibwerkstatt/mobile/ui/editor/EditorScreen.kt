@@ -56,6 +56,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.HorizontalRule
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
@@ -148,6 +149,8 @@ fun EditorScreen(
     pageTitle: String,
     onBack: () -> Unit,
     onOpenHistory: (pageId: Long, pageName: String) -> Unit,
+    /** Ideen dieses Abschnitts (Liste gefiltert, „+" legt sie hier an). */
+    onOpenIdeen: (pageId: Long, pageName: String) -> Unit,
     onNavigateToPage: (pageId: Long, pageName: String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -291,6 +294,13 @@ fun EditorScreen(
                                 tint = MaterialTheme.colorScheme.error,
                             )
                         }
+                    }
+                    // Ideen zu diesem Abschnitt.
+                    IconButton(onClick = { onOpenIdeen(pageId, pageTitle) }) {
+                        Icon(
+                            Icons.Filled.Lightbulb,
+                            contentDescription = stringResource(R.string.ideen_for_section),
+                        )
                     }
                     // Versionsverlauf der Seite.
                     IconButton(onClick = {

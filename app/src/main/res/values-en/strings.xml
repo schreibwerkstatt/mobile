@@ -274,11 +274,30 @@
     <string name="research_save">Save</string>
     <string name="research_saved">Research saved.</string>
     <string name="research_save_error">Save failed: %1$s</string>
-    <string name="research_capture_hint">Stored in the chosen book’s research board (online).</string>
+    <string name="research_capture_hint">Saved to the research board of the selected book. Without a connection it is queued and sent automatically; for a link without a note the server fetches title and text.</string>
     <string name="research_books_unavailable">No books available – the book list could not be loaded.</string>
     <string name="research_discard_title">Discard your input?</string>
     <string name="research_discard_confirm">Discard</string>
     <string name="research_open_failed">Could not open the link.</string>
+    <string name="research_queued">Queued without a connection – it will be sent automatically.</string>
+    <string name="research_url_invalid">Web addresses only (http/https), up to %1$d characters.</string>
+    <string name="research_image_attached">Image will be attached</string>
+    <string name="research_image_remove">Remove image</string>
+    <string name="research_duplicate_title">Link already saved</string>
+    <string name="research_duplicate_text">This link is already attached to a research item in this book. Save it as a new item anyway?</string>
+    <string name="research_duplicate_text_named">This link is already attached to «%1$s» in this book. Save it as a new item anyway?</string>
+    <string name="research_duplicate_keep">Save anyway</string>
+    <string name="research_error_empty">Enter a link, title or note.</string>
+    <string name="research_error_image">The image could not be read.</string>
+    <string name="research_error_image_large">The image is too large.</string>
+    <string name="research_error_rejected">Rejected by the server (%1$s).</string>
+    <string name="research_list_limited">Showing the newest %1$d items. Older ones are on the web board.</string>
+    <string name="research_detail_snippet">Shortened – the web board shows the full text.</string>
+    <string name="research_queued_waiting">Waiting for connection</string>
+    <string name="research_queued_finishing">Saved – image/text to follow</string>
+    <string name="research_queued_duplicate">Link already saved</string>
+    <string name="research_queued_duplicate_named">Link already saved as «%1$s»</string>
+    <string name="research_queued_discard">Discard</string>
 
     <!-- Sync status (offline/queue banner) -->
     <string name="sync_offline">Offline – changes are saved locally</string>
@@ -295,6 +314,7 @@
     <string name="error_locked">The section is currently locked.</string>
     <string name="error_not_found">Not found – was it deleted on the server?</string>
     <string name="error_unauthorized">Not authorized.</string>
+    <string name="error_read_only">You only have read access to this book.</string>
     <string name="error_bad_response">Unexpected response from the server.</string>
     <string name="error_server">Server error (HTTP %1$d).</string>
     <string name="error_unknown">Unexpected error (%1$s).</string>

@@ -66,6 +66,7 @@ open class NetworkClient(
     open fun stt(baseUrl: String): SttApi = retrofitFor(baseUrl).create(SttApi::class.java)
     open fun config(baseUrl: String): ConfigApi = retrofitFor(baseUrl).create(ConfigApi::class.java)
     open fun research(baseUrl: String): ResearchApi = retrofitFor(baseUrl).create(ResearchApi::class.java)
+    open fun ideen(baseUrl: String): IdeenApi = retrofitFor(baseUrl).create(IdeenApi::class.java)
     open fun languagetool(baseUrl: String): LanguageToolApi = retrofitFor(baseUrl).create(LanguageToolApi::class.java)
 
     /**

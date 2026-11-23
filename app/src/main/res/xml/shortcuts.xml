@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Statischer Launcher-Shortcut (langer Druck aufs App-Icon): „Neue Idee" öffnet das
+     Schnell-Erfassen mit dem zuletzt benutzten Buch. Kein applicationIdSuffix in den
+     Flavors/Build-Typen, darum ist targetPackage hier fest. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="new_idea"
+        android:enabled="true"
+        android:icon="@drawable/ic_idea"
+        android:shortcutShortLabel="@string/ideen_shortcut_short"
+        android:shortcutLongLabel="@string/ideen_shortcut_long">
+        <intent
+            android:action="ch.schreibwerkstatt.mobile.action.NEW_IDEA"
+            android:targetPackage="ch.schreibwerkstatt.mobile"
+            android:targetClass="ch.schreibwerkstatt.mobile.MainActivity" />
+    </shortcut>
+</shortcuts>

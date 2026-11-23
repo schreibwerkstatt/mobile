@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Ideen-Board (routes/ideen.js). Ideen sind privat. -->
+    <string name="ideen_title">Ideen</string>
+    <string name="ideen_add">Neue Idee</string>
+    <string name="ideen_empty">Noch keine Ideen</string>
+    <string name="ideen_empty_hint">Halte Einfälle, Szenen und Pendenzen fest – auch ohne Netz.</string>
+    <string name="ideen_load_failed">Ideen konnten nicht geladen werden. Zum Aktualisieren nach unten ziehen.</string>
+    <string name="ideen_load_error">Laden fehlgeschlagen: %1$s</string>
+
+    <string name="ideen_status_offen">Offen</string>
+    <string name="ideen_status_in_arbeit">In Arbeit</string>
+    <string name="ideen_status_erledigt">Erledigt</string>
+    <string name="ideen_status_verworfen">Verworfen</string>
+    <string name="ideen_section_count">%1$s · %2$d</string>
+    <string name="ideen_show_closed">Erledigte und verworfene zeigen</string>
+
+    <string name="ideen_anchor_book">Ganzes Buch</string>
+    <string name="ideen_anchor_chapter">Kapitel: %1$s</string>
+    <string name="ideen_anchor_page">Abschnitt: %1$s</string>
+    <string name="ideen_has_hint">Möglicherweise erledigt</string>
+
+    <!-- Vorgemerkte neue Ideen -->
+    <string name="ideen_pending_waiting">Wartet auf Verbindung</string>
+    <string name="ideen_pending_stuck">Nicht gespeichert (%1$s)</string>
+    <string name="ideen_pending_retry">Erneut senden</string>
+    <string name="ideen_pending_copy">Kopieren</string>
+    <string name="ideen_pending_discard">Verwerfen</string>
+    <string name="ideen_pending_discard_confirm">Diese Idee wurde nie gespeichert. Wirklich verwerfen?</string>
+    <string name="ideen_copied">Text kopiert</string>
+
+    <!-- Erfassen -->
+    <string name="ideen_capture_title">Idee festhalten</string>
+    <string name="ideen_capture_hint">Was ist dir eingefallen?</string>
+    <string name="ideen_capture_book">Buch</string>
+    <string name="ideen_capture_book_placeholder">Buch wählen</string>
+    <string name="ideen_capture_place">Ort</string>
+    <string name="ideen_save">Speichern</string>
+    <string name="ideen_saved">Idee gespeichert</string>
+    <string name="ideen_queued">Ohne Verbindung vorgemerkt – wird automatisch nachgesendet</string>
+    <string name="ideen_stuck">Server hat die Idee abgewiesen (%1$s). Sie liegt unter «Ideen» bereit.</string>
+    <string name="ideen_too_long">Zu lang (max. %1$d Zeichen)</string>
+    <string name="ideen_char_count">%1$d / %2$d</string>
+    <string name="ideen_no_books">Noch keine Bücher geladen. Öffne die App einmal mit Verbindung.</string>
+
+    <!-- Diktat -->
+    <string name="ideen_dictate">Diktieren</string>
+    <string name="ideen_dictate_stop">Diktat beenden</string>
+    <string name="ideen_dictate_transcribing">Wird erkannt …</string>
+    <string name="ideen_dictate_error">Diktat fehlgeschlagen: %1$s</string>
+    <string name="ideen_mic_denied">Ohne Mikrofon-Berechtigung kein Diktat.</string>
+
+    <!-- Bearbeiten -->
+    <string name="ideen_edit_title">Idee bearbeiten</string>
+    <string name="ideen_edit_status">Stufe</string>
+    <string name="ideen_edit_place">Ort</string>
+    <string name="ideen_edit_move">Ort ändern</string>
+    <string name="ideen_edit_delete">Löschen</string>
+    <string name="ideen_edit_delete_confirm">Idee endgültig löschen?</string>
+    <string name="ideen_edit_error">Speichern fehlgeschlagen: %1$s</string>
+    <string name="ideen_edit_closed_move">Erledigte oder verworfene Ideen lassen sich nicht verschieben.</string>
+    <string name="ideen_hint_title">Hinweis der Prüfung</string>
+    <string name="ideen_change_waiting">Änderung wartet auf Verbindung</string>
+    <string name="ideen_change_stuck">Änderung abgewiesen (%1$s)</string>
+    <string name="ideen_change_delete_stuck">Löschen abgewiesen (%1$s)</string>
+    <string name="ideen_change_discard">Änderung verwerfen</string>
+    <string name="ideen_for_section">Ideen zu diesem Abschnitt</string>
+    <string name="ideen_filter_section">Abschnitt «%1$s»</string>
+    <string name="ideen_filter_book">Ganzes Buch</string>
+    <string name="ideen_empty_section">Noch keine Ideen zu diesem Abschnitt</string>
+    <string name="ideen_empty_section_hint">Tippe auf „+", um eine Idee hier anzuhängen.</string>
+
+    <!-- Ort-Auswahl -->
+    <string name="ideen_pick_place">Ort wählen</string>
+    <string name="ideen_pick_loading">Gliederung wird geladen …</string>
+    <string name="ideen_pick_error">Gliederung nicht verfügbar (offline?).</string>
+    <string name="ideen_pick_filter">Kapitel oder Abschnitt suchen</string>
+
+    <string name="action_delete_ideen">Löschen</string>
+
+    <!-- Systemweite Einstiege -->
+    <string name="ideen_shortcut_short">Neue Idee</string>
+    <string name="ideen_shortcut_long">Idee festhalten</string>
+    <string name="ideen_share_label">Als Idee</string>
+    <string name="ideen_tile_label">Idee</string>
+</resources>
